@@ -63,6 +63,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Install the fork's test APK alongside the upstream signed app.
+            applicationIdSuffix = ".gboard"
+            versionNameSuffix = "-gboard"
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -82,6 +87,9 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
 }
 
@@ -104,6 +112,7 @@ dependencies {
     implementation("androidx.biometric:biometric:1.2.0-alpha05")
     implementation("androidx.fragment:fragment-ktx:1.8.2")
     testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.14.1")
     androidTestImplementation(libs.androidx.junit)
     implementation(libs.androidx.compose.foundation)
     androidTestImplementation(libs.androidx.espresso.core)
