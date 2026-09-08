@@ -1,0 +1,46 @@
+name: Gboard debug APK
+
+on:
+  push:
+    branches: [fix/gboard-hardware-ime]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Test Android input handling
+        run: nix develop -c bash -c 'cd android && ./gradlew :app:testDebugUnitTest'
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gboard-test-reports
+          path: android/app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+
+      - name: Build native SSH and terminal library
+        run: nix develop -c bash -c 'cd zig-src && zig build -Doptimize=ReleaseSmall -Dtarget=aarch64-linux-android.24 jni'
+
+      - name: Build APK
+        env:
+          ANDROID_ABI_FILTERS: arm64-v8a
+        run: nix develop -c bash -c 'cd android && ./gradlew :app:assembleDebug'
+
+      - name: Verify native library is packaged
+        run: unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep -F 'lib/arm64-v8a/libchuchu_jni.so'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chuchu-gboard-arm64-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
