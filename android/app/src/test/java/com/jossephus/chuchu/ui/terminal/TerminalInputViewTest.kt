@@ -184,4 +184,46 @@ class TerminalInputViewTest {
         assertEquals(2, keys[1][2])
         assertTrue(output.isEmpty())
     }
+
+    @Test
+    fun shiftedHardwareSymbolUsesTheAndroidLayoutResolvedCharacter() {
+        val down = KeyEvent(0, 0, KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_2, 0, KeyEvent.META_SHIFT_ON)
+        val up = KeyEvent(0, 0, KeyEvent.ACTION_UP,
+            KeyEvent.KEYCODE_2, 0, KeyEvent.META_SHIFT_ON)
+        val expected = String(Character.toChars(down.unicodeChar))
+
+        assertTrue(view.onKeyDown(down.keyCode, down))
+        assertTrue(view.onKeyUp(up.keyCode, up))
+
+        assertEquals(expected, output.toString())
+        assertTrue(keys.isEmpty())
+    }
+
+    @Test
+    fun inputConnectionAlsoEmitsShiftedSymbolAsResolvedText() {
+        val down = KeyEvent(0, 0, KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_1, 0, KeyEvent.META_SHIFT_ON)
+        val up = KeyEvent(0, 0, KeyEvent.ACTION_UP,
+            KeyEvent.KEYCODE_1, 0, KeyEvent.META_SHIFT_ON)
+        val expected = String(Character.toChars(down.unicodeChar))
+
+        assertTrue(connection.sendKeyEvent(down))
+        assertTrue(connection.sendKeyEvent(up))
+
+        assertEquals(expected, output.toString())
+        assertTrue(keys.isEmpty())
+    }
+
+    @Test
+    fun ctrlShiftSymbolStaysOnTheTerminalKeyPath() {
+        val event = KeyEvent(0, 0, KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_2, 0, KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON)
+
+        assertTrue(view.onKeyDown(event.keyCode, event))
+
+        assertTrue(output.isEmpty())
+        assertEquals(1, keys.size)
+        assertEquals(3, keys.single()[2])
+    }
 }
