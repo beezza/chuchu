@@ -1,6 +1,7 @@
 package com.jossephus.chuchu.ui.terminal
 
 import android.content.Context
+import android.os.Build
 import android.os.SystemClock
 import android.text.Editable
 import android.text.Selection
@@ -11,8 +12,11 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedText
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputConnectionWrapper
 import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.TextAttribute
 import android.widget.EditText
+import androidx.annotation.RequiresApi
 
 class TerminalInputView(context: Context) : EditText(context) {
 
@@ -146,8 +150,7 @@ class TerminalInputView(context: Context) : EditText(context) {
             EditorInfo.IME_FLAG_NO_EXTRACT_UI or
                 EditorInfo.IME_ACTION_NONE
         inputType = android.text.InputType.TYPE_CLASS_TEXT or
-            android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-            android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
     }
 
     override fun onCheckIsTextEditor(): Boolean = true
@@ -204,16 +207,22 @@ class TerminalInputView(context: Context) : EditText(context) {
     }
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+        // TextView initializes its editor/IME state here. A standalone
+        // BaseInputConnection skips selection, composing-region and cursor
+        // updates needed by IMEs handling physical-keyboard conversion.
+        val editorConnection = checkNotNull(super.onCreateInputConnection(outAttrs))
+        inputMethodManager = context.getSystemService(InputMethodManager::class.java)
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or
             EditorInfo.IME_FLAG_NO_FULLSCREEN or
             EditorInfo.IME_ACTION_NONE
+        // NO_SUGGESTIONS is an IME-wide request to suppress candidates, not
+        // just English autocorrect. Leave Japanese conversion available.
         outAttrs.inputType = android.text.InputType.TYPE_CLASS_TEXT or
-            android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-            android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
         outAttrs.initialSelStart = selectionStart
         outAttrs.initialSelEnd = selectionEnd
 
-        val conn = TerminalInputConnection(this)
+        val conn = TerminalInputConnection(this, editorConnection)
         activeInputConnection = conn
         logInput("onCreateInputConnection conn=${conn.connectionId}")
         return conn
@@ -221,7 +230,8 @@ class TerminalInputView(context: Context) : EditText(context) {
 
     private class TerminalInputConnection(
         private val view: TerminalInputView,
-    ) : BaseInputConnection(view, true) {
+        editorConnection: InputConnection,
+    ) : InputConnectionWrapper(editorConnection, false) {
 
         val connectionId: Int = System.identityHashCode(this)
 
@@ -232,7 +242,7 @@ class TerminalInputView(context: Context) : EditText(context) {
         private var outerBatchHadDirectEmission = false
         private var directMutationDepth = 0
 
-        override fun getEditable(): Editable = view.editableText
+        private fun getEditable(): Editable = view.editableText
 
         private fun logConn(message: String) {
             view.logInput("conn=$connectionId $message")
@@ -272,8 +282,13 @@ class TerminalInputView(context: Context) : EditText(context) {
         }
 
         private fun emitDiff(source: String, before: String, after: String) {
-            val commonLen = before.zip(after).takeWhile { it.first == it.second }.size
-            val deletes = before.length - commonLen
+            var commonLen = 0
+            while (commonLen < before.length && commonLen < after.length) {
+                val codepoint = before.codePointAt(commonLen)
+                if (codepoint != after.codePointAt(commonLen)) break
+                commonLen += Character.charCount(codepoint)
+            }
+            val deletes = before.codePointCount(commonLen, before.length)
             val inserted = after.substring(commonLen)
             logConn(
                 "emitDiff source=$source before=${view.describeText(before)} after=${view.describeText(after)} del=$deletes ins=${view.describeText(inserted)}",
@@ -336,9 +351,9 @@ class TerminalInputView(context: Context) : EditText(context) {
                 "mutate source=$source composing=$composing ok=$ok before=${view.describeText(before)} after=${view.describeText(after)} suppress=${view.suppressInput}",
             )
 
-            if (before != after) {
-                outerBatchHadDirectEmission = true
-            }
+            // Even an identical commit can clear the mirror below. Its batch
+            // must not interpret that local reset as terminal backspaces.
+            outerBatchHadDirectEmission = true
 
             reconcileAndEmitMutation(source, before, after)
 
@@ -382,9 +397,30 @@ class TerminalInputView(context: Context) : EditText(context) {
             }
         }
 
+        // Wrapper overloads otherwise go straight to the platform connection,
+        // bypassing terminal emission on Android 13+.
+        @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+        override fun commitText(text: CharSequence, newCursorPosition: Int, textAttribute: TextAttribute?): Boolean =
+            mutateEditableAndEmit("commitText.attributes", composing = false) {
+                super.commitText(text, newCursorPosition, textAttribute)
+            }
+
+        @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+        override fun setComposingText(text: CharSequence, newCursorPosition: Int, textAttribute: TextAttribute?): Boolean =
+            mutateEditableAndEmit("setComposingText.attributes", composing = text.isNotEmpty()) {
+                super.setComposingText(text, newCursorPosition, textAttribute)
+            }
+
+        @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+        override fun replaceText(start: Int, end: Int, text: CharSequence, newCursorPosition: Int, textAttribute: TextAttribute?): Boolean =
+            mutateEditableAndEmit("replaceText", composing = false) {
+                super.replaceText(start, end, text, newCursorPosition, textAttribute)
+            }
+
         override fun finishComposingText(): Boolean {
             logConn("finishComposingText")
             val ok = super.finishComposingText()
+            outerBatchHadDirectEmission = true
             // Composing region is committed; drop the mirror copy so a later
             // backspace can't mass-delete it.
             if (getEditable().isNotEmpty()) clearMirrorSilently()
@@ -402,6 +438,9 @@ class TerminalInputView(context: Context) : EditText(context) {
         }
 
         override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText {
+            // Register monitored extraction with TextView so subsequent edits
+            // are reported to the IME even with the software keyboard hidden.
+            super.getExtractedText(request, flags)?.let { return it }
             val editable = getEditable()
             val extracted = ExtractedText().apply {
                 text = editable.toString()
@@ -417,10 +456,25 @@ class TerminalInputView(context: Context) : EditText(context) {
             return extracted
         }
 
-        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean =
+            deleteSurroundingTextAndEmit(beforeLength, afterLength) {
+                super.deleteSurroundingText(beforeLength, afterLength)
+            }
+
+        override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean =
+            deleteSurroundingTextAndEmit(beforeLength, afterLength) {
+                super.deleteSurroundingTextInCodePoints(beforeLength, afterLength)
+            }
+
+        private fun deleteSurroundingTextAndEmit(beforeLength: Int, afterLength: Int, op: () -> Boolean): Boolean {
+            if (beforeLength < 0 || afterLength < 0) return false
             val before = getEditable().toString()
-            val ok = super.deleteSurroundingText(beforeLength, afterLength)
+            val ok = op()
             val after = getEditable().toString()
+            if (!ok) return false
+            // A surrounding delete is emitted here, including inside an IME
+            // batch. Do not emit it a second time when that batch closes.
+            outerBatchHadDirectEmission = true
             logConn(
                 "deleteSurroundingText beforeLen=$beforeLength afterLen=$afterLength ok=$ok before=${view.describeText(before)} after=${view.describeText(after)} suppress=${view.suppressInput}",
             )
