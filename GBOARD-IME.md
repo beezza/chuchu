@@ -67,11 +67,17 @@ keyboard is visible. Run the checks with it visible and hidden.
 - `git diff --check`: passed.
 - 14 Robolectric regression tests added using Android API 34, including the
   platform editor batch lifecycle and Android 13/14 input APIs.
-- Unit tests and APK build: **not run**. This editing environment has no Android
-  SDK, and Gradle distribution download fails with `Network is unreachable`.
+- Android unit tests (including all 14 new IME tests), native library build,
+  debug APK assembly and native-library packaging check: **passed** in
+  [Actions run 34239943887](https://github.com/beezza/chuchu/actions/runs/34239943887)
+  at commit `cd03b158b09299da67813af259c1f135b1002df5`.
+- APK SHA-256: `a242df681f680e6162937f5f6ccd759d95fba4b65b2e36173828190fb11737fc`.
+  The downloaded archive digest matched GitHub Actions, and the APK includes
+  `lib/arm64-v8a/libchuchu_jni.so`.
 - Gboard/physical keyboard on a real device: **not tested**. Robolectric does
   not run Gboard or prove that a specific Gboard/device combination is fixed.
-- GitHub fork/push: pending authentication; local source is prepared.
+- Fork: [beezza/chuchu](https://github.com/beezza/chuchu/tree/fix/gboard-hardware-ime).
+  All code changes are saved on `fix/gboard-hardware-ime`.
 
 ## References
 
