@@ -226,4 +226,30 @@ class TerminalInputViewTest {
         assertEquals(1, keys.size)
         assertEquals(3, keys.single()[2])
     }
+
+    @Test
+    fun enterClearsTheMirrorAndKeepsTheSameInputConnectionUsable() {
+        connection.setComposingText("echo test", 1)
+        output.clear()
+
+        val enter = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)
+        assertTrue(connection.sendKeyEvent(enter))
+        assertEquals("", view.editableText.toString())
+
+        connection.commitText("next", 1)
+
+        assertEquals("next", output.toString())
+        assertEquals(GhosttyKey.enter, keys.single()[0])
+    }
+
+    @Test
+    fun committedNewlineClearsTheMirrorAndKeepsTheSameInputConnectionUsable() {
+        connection.commitText("echo test\n", 1)
+        assertEquals("", view.editableText.toString())
+
+        connection.commitText("next", 1)
+
+        assertEquals("echo test\rnext", output.toString())
+        assertTrue(keys.isEmpty())
+    }
 }
