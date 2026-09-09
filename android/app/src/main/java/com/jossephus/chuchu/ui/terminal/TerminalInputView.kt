@@ -101,9 +101,6 @@ class TerminalInputView(context: Context) : EditText(context) {
             keyCode == KeyEvent.KEYCODE_INSERT ||
             keyCode == KeyEvent.KEYCODE_ESCAPE
 
-    private fun shouldRestartImeAfterMirrorInvalidate(keyCode: Int): Boolean =
-        keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
-
     private fun emitTerminalText(source: String, text: String) {
         logInput("emit source=$source text=${describeText(text)}")
         onTerminalText?.invoke(text)
@@ -162,14 +159,6 @@ class TerminalInputView(context: Context) : EditText(context) {
             "armSuppression reason=$reason epoch=$epoch snapshot=${describeText(suppressionSnapshot)}",
         )
         activeInputConnection?.armSuppression()
-        inputMethodManager?.let { imm ->
-            post {
-                if (suppressInput && suppressionEpoch == epoch) {
-                    logInput("armSuppression.restartInput epoch=$epoch")
-                    imm.restartInput(this)
-                }
-            }
-        }
     }
 
     private fun clearSuppression(reason: String) {
@@ -212,9 +201,7 @@ class TerminalInputView(context: Context) : EditText(context) {
         if (mapped != null && ghosttyAction != null) {
             clearSuppression("onKeyDown keyCode=$keyCode")
             if (ghosttyAction == GhosttyKeyAction.Press && shouldInvalidateImeMirrorForKey(keyCode)) {
-                activeInputConnection?.invalidateImeMirror(
-                    restartIme = shouldRestartImeAfterMirrorInvalidate(keyCode),
-                )
+                activeInputConnection?.invalidateImeMirror()
             }
             onTerminalKey?.invoke(mapped.key, mapped.codepoint, mapped.mods, ghosttyAction, mapped.charCode)
             return true
@@ -300,23 +287,20 @@ class TerminalInputView(context: Context) : EditText(context) {
 
         fun armSuppression() {
             logConn("armSuppression -> clearImeBuffer")
-            clearImeBuffer(restart = false)
+            clearImeBuffer()
         }
 
-        fun invalidateImeMirror(restartIme: Boolean = false) {
-            logConn("invalidateImeMirror restartIme=$restartIme -> clearImeBuffer")
-            clearImeBuffer(restart = restartIme)
+        fun invalidateImeMirror() {
+            logConn("invalidateImeMirror -> clearImeBuffer")
+            clearImeBuffer()
         }
 
-        private fun clearImeBuffer(restart: Boolean) {
+        private fun clearImeBuffer() {
             val editable = getEditable()
             BaseInputConnection.removeComposingSpans(editable)
             if (editable.isNotEmpty()) editable.clear()
             Selection.setSelection(editable, 0)
-            logConn("clearImeBuffer restart=$restart")
-            if (restart) {
-                view.inputMethodManager?.restartInput(view)
-            }
+            logConn("clearImeBuffer")
         }
 
         private fun emitTerminalTextWithNewlineMapping(source: String, text: String) {
@@ -366,7 +350,7 @@ class TerminalInputView(context: Context) : EditText(context) {
             logConn(
                 "consumeSuppressionIfCleanup source=$source before=${view.describeText(before)} after=${view.describeText(after)} snapshot=${view.describeText(snapshot)}",
             )
-            clearImeBuffer(restart = false)
+            clearImeBuffer()
             view.clearSuppression("$source cleanup")
             return true
         }
@@ -383,7 +367,7 @@ class TerminalInputView(context: Context) : EditText(context) {
             emitDiff(source, before, after)
 
             if (after.contains('\n') || after.contains('\r') || after.length > maxImeBufferChars) {
-                clearImeBuffer(restart = true)
+                clearImeBuffer()
             }
         }
 
@@ -533,7 +517,7 @@ class TerminalInputView(context: Context) : EditText(context) {
             // nothing (editable already empty) is the IME's cleanup. Swallow it.
             if (view.isSuppressionCleanupWindowActive() && before == after) {
                 logConn("deleteSurroundingText cleanup swallowed")
-                clearImeBuffer(restart = false)
+                clearImeBuffer()
                 view.clearSuppression("deleteSurroundingText cleanup")
                 return ok
             }
@@ -616,9 +600,7 @@ class TerminalInputView(context: Context) : EditText(context) {
                 val mapped = KeyMapper.map(event.keyCode, event.unicodeChar, event.metaState)
                 if (mapped != null) {
                     if (ghosttyAction == GhosttyKeyAction.Press && view.shouldInvalidateImeMirrorForKey(event.keyCode)) {
-                        invalidateImeMirror(
-                            restartIme = view.shouldRestartImeAfterMirrorInvalidate(event.keyCode),
-                        )
+                        invalidateImeMirror()
                     }
                     view.onTerminalKey?.invoke(mapped.key, mapped.codepoint, mapped.mods, ghosttyAction, mapped.charCode)
                     return true
