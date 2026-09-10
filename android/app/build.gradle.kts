@@ -46,14 +46,19 @@ android {
 
     }
 
+    val keystoreFile = file("key.jks")
+    val keystorePassword = System.getenv("KEYSTORE_PASSWORD")
+    val keyAliasEnv = System.getenv("KEY_ALIAS")
+    val keyPasswordEnv = System.getenv("KEY_PASSWORD")
+    val externalSigningConfigured =
+        keystoreFile.exists() &&
+            keystorePassword != null &&
+            keyAliasEnv != null &&
+            keyPasswordEnv != null
+
     signingConfigs {
         create("release") {
-            val keystoreFile = file("key.jks")
-            val keystorePassword = System.getenv("KEYSTORE_PASSWORD")
-            val keyAliasEnv = System.getenv("KEY_ALIAS")
-            val keyPasswordEnv = System.getenv("KEY_PASSWORD")
-
-            if (keystorePassword != null && keyAliasEnv != null && keyPasswordEnv != null && keystoreFile.exists()) {
+            if (externalSigningConfigured) {
                 storeFile = keystoreFile
                 storePassword = keystorePassword
                 keyAlias = keyAliasEnv
@@ -67,6 +72,9 @@ android {
             // Install the fork's test APK alongside the upstream signed app.
             applicationIdSuffix = ".gboard"
             versionNameSuffix = "-gboard"
+            if (externalSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         release {
             isMinifyEnabled = true
