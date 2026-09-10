@@ -29,6 +29,7 @@ import com.jossephus.chuchu.ui.screens.Files.FileSort
 import com.jossephus.chuchu.ui.screens.Files.UploadProgress
 import com.jossephus.chuchu.ui.terminal.GhosttyKeyAction
 import com.jossephus.chuchu.ui.terminal.TerminalSpecialKey
+import com.jossephus.chuchu.ui.terminal.prepareHardwareKeyInput
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -700,17 +701,12 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onHardwareKey(key: Int, codepoint: Int, mods: Int, action: Int, charCode: Int = 0) {
-        val hasNonTextModifier = mods and ((1 shl 1) or (1 shl 2) or (1 shl 3)) != 0
         val isRelease = action == GhosttyKeyAction.Release
         if (!isRelease) {
             sessionRepository.scrollToActive()
         }
-        val effectiveCodepoint = if (charCode > 0) charCode else codepoint
-
-        val utf8 =
-            if (effectiveCodepoint > 0 && !hasNonTextModifier && !isRelease) effectiveCodepoint.toChar().toString()
-            else null
-        sessionRepository.writeKey(key, effectiveCodepoint, mods, action, utf8)
+        val input = prepareHardwareKeyInput(codepoint, charCode, mods, action)
+        sessionRepository.writeKey(key, input.unshiftedCodepoint, mods, action, input.utf8)
     }
 
     fun onTextInput(text: String) {
