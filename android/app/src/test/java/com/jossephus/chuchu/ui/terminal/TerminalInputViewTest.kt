@@ -180,39 +180,46 @@ class TerminalInputViewTest {
         view.onKeyDown(KeyEvent.KEYCODE_C, KeyEvent(0, 0, KeyEvent.ACTION_DOWN,
             KeyEvent.KEYCODE_C, 0, KeyEvent.META_CTRL_ON))
         assertEquals(1, keys[0][2])
+        assertEquals('a'.code, keys[0][1])
         assertEquals('A'.code, keys[0][4])
         assertEquals(2, keys[1][2])
         assertTrue(output.isEmpty())
     }
 
     @Test
-    fun shiftedHardwareSymbolUsesTheAndroidLayoutResolvedCharacter() {
+    fun shiftedHardwareSymbolRetainsThePhysicalKeyAndResolvedCharacter() {
         val down = KeyEvent(0, 0, KeyEvent.ACTION_DOWN,
             KeyEvent.KEYCODE_2, 0, KeyEvent.META_SHIFT_ON)
         val up = KeyEvent(0, 0, KeyEvent.ACTION_UP,
             KeyEvent.KEYCODE_2, 0, KeyEvent.META_SHIFT_ON)
-        val expected = String(Character.toChars(down.unicodeChar))
 
         assertTrue(view.onKeyDown(down.keyCode, down))
         assertTrue(view.onKeyUp(up.keyCode, up))
 
-        assertEquals(expected, output.toString())
-        assertTrue(keys.isEmpty())
+        assertTrue(output.isEmpty())
+        assertEquals(2, keys.size)
+        assertEquals('2'.code, keys[0][1])
+        assertEquals(1, keys[0][2])
+        assertEquals(down.unicodeChar, keys[0][4])
+        assertEquals(GhosttyKeyAction.Press, keys[0][3])
+        assertEquals(GhosttyKeyAction.Release, keys[1][3])
     }
 
     @Test
-    fun inputConnectionAlsoEmitsShiftedSymbolAsResolvedText() {
+    fun inputConnectionRetainsShiftedSymbolKeyAndResolvedCharacter() {
         val down = KeyEvent(0, 0, KeyEvent.ACTION_DOWN,
             KeyEvent.KEYCODE_1, 0, KeyEvent.META_SHIFT_ON)
         val up = KeyEvent(0, 0, KeyEvent.ACTION_UP,
             KeyEvent.KEYCODE_1, 0, KeyEvent.META_SHIFT_ON)
-        val expected = String(Character.toChars(down.unicodeChar))
 
         assertTrue(connection.sendKeyEvent(down))
         assertTrue(connection.sendKeyEvent(up))
 
-        assertEquals(expected, output.toString())
-        assertTrue(keys.isEmpty())
+        assertTrue(output.isEmpty())
+        assertEquals(2, keys.size)
+        assertEquals('1'.code, keys[0][1])
+        assertEquals(1, keys[0][2])
+        assertEquals(down.unicodeChar, keys[0][4])
     }
 
     @Test
