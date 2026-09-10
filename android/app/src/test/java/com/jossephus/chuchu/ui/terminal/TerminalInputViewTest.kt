@@ -235,6 +235,54 @@ class TerminalInputViewTest {
     }
 
     @Test
+    fun ctrlShiftCopyInvokesLocalShortcutOnceAndConsumesItsRelease() {
+        var copies = 0
+        view.onCopyShortcut = { copies += 1 }
+        val meta = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
+        val down = KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_C, 0, meta)
+        val repeat = KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_C, 1, meta)
+        val up = KeyEvent(0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_C, 0, meta)
+
+        assertTrue(view.onKeyDown(down.keyCode, down))
+        assertTrue(view.onKeyDown(repeat.keyCode, repeat))
+        assertTrue(view.onKeyUp(up.keyCode, up))
+
+        assertEquals(1, copies)
+        assertTrue(keys.isEmpty())
+        assertTrue(output.isEmpty())
+    }
+
+    @Test
+    fun inputConnectionCtrlShiftPasteInvokesLocalShortcutAndConsumesKeyPair() {
+        var pastes = 0
+        view.onPasteShortcut = { pastes += 1 }
+        val meta = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
+        val down = KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_V, 0, meta)
+        val up = KeyEvent(0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_V, 0, meta)
+
+        assertTrue(connection.sendKeyEvent(down))
+        assertTrue(connection.sendKeyEvent(up))
+
+        assertEquals(1, pastes)
+        assertTrue(keys.isEmpty())
+        assertTrue(output.isEmpty())
+    }
+
+    @Test
+    fun ctrlShiftAltCopyRemainsOnTheTerminalKeyPath() {
+        var copies = 0
+        view.onCopyShortcut = { copies += 1 }
+        val event = KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_C, 0,
+            KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON or KeyEvent.META_ALT_ON)
+
+        assertTrue(view.onKeyDown(event.keyCode, event))
+
+        assertEquals(0, copies)
+        assertEquals(1, keys.size)
+        assertEquals(7, keys.single()[2])
+    }
+
+    @Test
     fun enterClearsTheMirrorAndKeepsTheSameInputConnectionUsable() {
         connection.setComposingText("echo test", 1)
         output.clear()
