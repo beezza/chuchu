@@ -1430,6 +1430,8 @@ fun TerminalScreen(
                                                         )
                                                     }
                                                 }
+                                                onCopyShortcut = { copySelection() }
+                                                onPasteShortcut = { pasteClipboard() }
                                                 onTerminalKey = { key, codepoint, mods, action, charCode ->
                                                     var shouldForwardToTerminal = true
                                                     val overlayOpen = showTabSheet || showGlobalTabManager
