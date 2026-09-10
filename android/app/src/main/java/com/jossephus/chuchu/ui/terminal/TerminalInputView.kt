@@ -6,7 +6,6 @@ import android.os.SystemClock
 import android.text.Editable
 import android.text.Selection
 import android.util.Log
-import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
@@ -53,13 +52,6 @@ class TerminalInputView(context: Context) : EditText(context) {
 
     /** Cached InputMethodManager for IME restarts. */
     private var inputMethodManager: InputMethodManager? = null
-
-    /**
-     * Shift-produced symbols are sent as layout-resolved text on key-down.
-     * Remember those keys so their key-up is consumed instead of becoming an
-     * unmatched Ghostty release event.
-     */
-    private val layoutResolvedTextKeys = mutableSetOf<Int>()
 
     private fun logInput(message: String) {
         if (!DEBUG_INPUT_LOGS) return
@@ -111,44 +103,6 @@ class TerminalInputView(context: Context) : EditText(context) {
         onTerminalText?.invoke("\u007f")
     }
 
-    /**
-     * Android has already applied the active hardware-keyboard layout to
-     * [KeyEvent.getUnicodeChar]. Passing that shifted symbol through Ghostty as
-     * both a shifted physical key and an unshifted codepoint makes it apply the
-     * modifier a second time. Send the resolved symbol as text instead.
-     *
-     * Ctrl/Alt/Meta combinations stay on the raw-key path for terminal
-     * shortcuts and keyboard protocols. Letters and digits also stay there;
-     * this workaround is deliberately limited to Shift-produced symbols.
-     */
-    private fun layoutResolvedShiftSymbol(event: KeyEvent): String? {
-        if (!event.isShiftPressed || event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) {
-            return null
-        }
-
-        val codepoint = event.unicodeChar
-        if (
-            codepoint <= 0 ||
-            codepoint and KeyCharacterMap.COMBINING_ACCENT != 0 ||
-            !Character.isValidCodePoint(codepoint) ||
-            Character.isISOControl(codepoint) ||
-            Character.isWhitespace(codepoint) ||
-            Character.isLetterOrDigit(codepoint)
-        ) {
-            return null
-        }
-
-        return String(Character.toChars(codepoint))
-    }
-
-    private fun emitLayoutResolvedShiftSymbol(event: KeyEvent, source: String): Boolean {
-        val text = layoutResolvedShiftSymbol(event) ?: return false
-        clearSuppression("$source keyCode=${event.keyCode}")
-        layoutResolvedTextKeys += event.keyCode
-        emitTerminalText(source, text)
-        return true
-    }
-
     fun armInputSuppression(reason: String) {
         suppressInput = true
         suppressionSnapshot = editableText.toString()
@@ -194,8 +148,6 @@ class TerminalInputView(context: Context) : EditText(context) {
         logInput(
             "onKeyDown keyCode=$keyCode unicode=${event.unicodeChar} meta=${event.metaState} flags=${event.flags}",
         )
-        if (emitLayoutResolvedShiftSymbol(event, "onKeyDown.shiftSymbol")) return true
-
         val ghosttyAction = GhosttyKeyAction.fromAndroid(event.action, event.repeatCount)
         val mapped = KeyMapper.map(keyCode, event.unicodeChar, event.metaState)
         if (mapped != null && ghosttyAction != null) {
@@ -217,8 +169,6 @@ class TerminalInputView(context: Context) : EditText(context) {
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         logInput("onKeyUp keyCode=$keyCode flags=${event.flags}")
-        if (layoutResolvedTextKeys.remove(keyCode)) return true
-
         val ghosttyAction = GhosttyKeyAction.fromAndroid(event.action, event.repeatCount)
         val mapped = KeyMapper.map(keyCode, event.unicodeChar, event.metaState)
         if (mapped != null && ghosttyAction != null) {
@@ -588,13 +538,6 @@ class TerminalInputView(context: Context) : EditText(context) {
             logConn(
                 "sendKeyEvent action=${event.action} keyCode=${event.keyCode} unicode=${event.unicodeChar} meta=${event.metaState} flags=${event.flags}",
             )
-            if (event.action == KeyEvent.ACTION_DOWN && view.emitLayoutResolvedShiftSymbol(event, "sendKeyEvent.shiftSymbol")) {
-                return true
-            }
-            if (event.action == KeyEvent.ACTION_UP && view.layoutResolvedTextKeys.remove(event.keyCode)) {
-                return true
-            }
-
             val ghosttyAction = GhosttyKeyAction.fromAndroid(event.action, event.repeatCount)
             if (ghosttyAction != null) {
                 val mapped = KeyMapper.map(event.keyCode, event.unicodeChar, event.metaState)
