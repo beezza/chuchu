@@ -28,6 +28,11 @@ class TerminalInputView(context: Context) : EditText(context) {
 
     var onTerminalText: ((String) -> Unit)? = null
     var onTerminalKey: ((Int, Int, Int, Int, Int) -> Unit)? = null
+    var onCopyShortcut: (() -> Unit)? = null
+    var onPasteShortcut: (() -> Unit)? = null
+
+    /** Keys consumed as local clipboard shortcuts until their key-up arrives. */
+    private val clipboardShortcutKeys = mutableSetOf<Int>()
 
     /**
      * When true, suppress IME text input. Used to prevent double-sends
@@ -103,6 +108,35 @@ class TerminalInputView(context: Context) : EditText(context) {
         onTerminalText?.invoke("\u007f")
     }
 
+    private fun handleClipboardShortcut(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_UP && clipboardShortcutKeys.remove(event.keyCode)) {
+            return true
+        }
+        if (
+            event.action != KeyEvent.ACTION_DOWN ||
+            !event.isCtrlPressed ||
+            !event.isShiftPressed ||
+            event.isAltPressed ||
+            event.isMetaPressed
+        ) {
+            return false
+        }
+
+        val handler =
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_C -> onCopyShortcut
+                KeyEvent.KEYCODE_V -> onPasteShortcut
+                else -> null
+            } ?: return false
+
+        clearSuppression("clipboardShortcut keyCode=${event.keyCode}")
+        val isFirstPress = clipboardShortcutKeys.add(event.keyCode)
+        if (isFirstPress && event.repeatCount == 0) {
+            handler.invoke()
+        }
+        return true
+    }
+
     fun armInputSuppression(reason: String) {
         suppressInput = true
         suppressionSnapshot = editableText.toString()
@@ -148,6 +182,8 @@ class TerminalInputView(context: Context) : EditText(context) {
         logInput(
             "onKeyDown keyCode=$keyCode unicode=${event.unicodeChar} meta=${event.metaState} flags=${event.flags}",
         )
+        if (handleClipboardShortcut(event)) return true
+
         val ghosttyAction = GhosttyKeyAction.fromAndroid(event.action, event.repeatCount)
         val mapped = KeyMapper.map(keyCode, event.unicodeChar, event.metaState)
         if (mapped != null && ghosttyAction != null) {
@@ -169,6 +205,8 @@ class TerminalInputView(context: Context) : EditText(context) {
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         logInput("onKeyUp keyCode=$keyCode flags=${event.flags}")
+        if (handleClipboardShortcut(event)) return true
+
         val ghosttyAction = GhosttyKeyAction.fromAndroid(event.action, event.repeatCount)
         val mapped = KeyMapper.map(keyCode, event.unicodeChar, event.metaState)
         if (mapped != null && ghosttyAction != null) {
@@ -538,6 +576,8 @@ class TerminalInputView(context: Context) : EditText(context) {
             logConn(
                 "sendKeyEvent action=${event.action} keyCode=${event.keyCode} unicode=${event.unicodeChar} meta=${event.metaState} flags=${event.flags}",
             )
+            if (view.handleClipboardShortcut(event)) return true
+
             val ghosttyAction = GhosttyKeyAction.fromAndroid(event.action, event.repeatCount)
             if (ghosttyAction != null) {
                 val mapped = KeyMapper.map(event.keyCode, event.unicodeChar, event.metaState)
