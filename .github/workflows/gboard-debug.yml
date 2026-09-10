@@ -19,6 +19,9 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
+      - name: Verify Android signing tool
+        run: nix develop -c bash -c '"$ANDROID_HOME/build-tools/35.0.0/apksigner" version'
+
       - name: Test Android input handling
         run: nix develop -c bash -c 'cd android && ./gradlew :app:testDebugUnitTest'
 
@@ -64,8 +67,9 @@ jobs:
         run: |
           set -euo pipefail
           actual="$(nix develop -c bash -c '
-            apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print -quit)"
-            test -n "$apksigner"
+            set -euo pipefail
+            apksigner="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+            test -x "$apksigner"
             "$apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk
           ' | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
           if [ "${actual,,}" != "$EXPECTED_SIGNING_CERT_SHA256" ]; then
