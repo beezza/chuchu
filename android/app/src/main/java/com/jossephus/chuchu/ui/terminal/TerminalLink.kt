@@ -23,8 +23,23 @@ private const val TRAILING_LINK_PUNCTUATION = ".,;:!?]}"
  * web URLs are accepted before handing the value to an ACTION_VIEW intent.
  */
 fun findTerminalLink(text: String): String? {
-    for (match in TERMINAL_LINK_PATTERN.findAll(text)) {
-        normalizeTerminalLink(match.value)?.let { return it }
+    val lines = text.split('\n')
+    for (startLine in lines.indices) {
+        for (match in TERMINAL_LINK_PATTERN.findAll(lines[startLine])) {
+            val candidate = StringBuilder(match.value)
+            var lastLine = startLine
+            var canWrap = lines[startLine].substring(match.range.last + 1).all { it == ' ' || it == '\t' }
+            while (canWrap && lastLine + 1 < lines.size) {
+                val nextLine = lines[lastLine + 1]
+                val continuationLength = nextLine.indexOfFirst { it == ' ' || it == '\t' }
+                    .let { if (it < 0) nextLine.length else it }
+                if (continuationLength <= 0) break
+                candidate.append(nextLine, 0, continuationLength)
+                lastLine++
+                canWrap = nextLine.substring(continuationLength).all { it == ' ' || it == '\t' }
+            }
+            normalizeTerminalLink(candidate.toString())?.let { return it }
+        }
     }
     return null
 }
@@ -69,7 +84,6 @@ internal fun TerminalSnapshot.linkAt(cellIndex: Int): TerminalLink? {
 }
 
 private data class RenderedTerminalLinkRow(
-    val row: Int,
     val text: String,
     val cellStarts: IntArray,
     val cellEnds: IntArray,
@@ -106,7 +120,7 @@ private fun TerminalSnapshot.renderTerminalLinkRow(row: Int): RenderedTerminalLi
         cellEnds[offset] = text.length
     }
 
-    return RenderedTerminalLinkRow(row, text.toString(), cellStarts, cellEnds)
+    return RenderedTerminalLinkRow(text.toString(), cellStarts, cellEnds)
 }
 
 private fun normalizeTerminalLink(rawCandidate: String): String? {
