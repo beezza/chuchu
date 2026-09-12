@@ -70,10 +70,11 @@ internal fun TerminalSnapshot.linkAt(cellIndex: Int): TerminalLink? {
         if (cellStarts[offset] >= match.range.last + 1) break
         if (cellEnds[offset] > match.range.first) lastCell = offset
     }
-    return TerminalLink(
+    val link = TerminalLink(
         url = url,
         cellRange = (rowStart + firstCell)..(rowStart + lastCell),
     )
+    return link.takeIf { cellIndex in it.cellRange }
 }
 
 private fun normalizeTerminalLink(rawCandidate: String): String? {
