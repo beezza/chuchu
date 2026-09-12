@@ -32,9 +32,62 @@ fun findTerminalLink(text: String): String? {
 /** Find the web link under a rendered terminal cell, if any. */
 internal fun TerminalSnapshot.linkAt(cellIndex: Int): TerminalLink? {
     if (cols <= 0 || rows <= 0 || cellIndex !in codepoints.indices) return null
-    val row = cellIndex / cols
-    if (row !in 0 until rows) return null
+    val renderedRows = (0 until rows).map { renderTerminalLinkRow(it) }
+    val tappedRow = cellIndex / cols
 
+    for (startRow in 0..tappedRow) {
+        val row = renderedRows[startRow]
+        for (match in TERMINAL_LINK_PATTERN.findAll(row.text)) {
+            val firstRange = row.cellRangeForText(match.range.first, match.range.last + 1) ?: continue
+            val candidate = StringBuilder(match.value)
+            var lastCell = startRow * cols + firstRange.last
+            var lastRow = startRow
+            var canWrap = row.text.substring(match.range.last + 1).all { it == ' ' }
+
+            while (canWrap && lastRow + 1 < rows) {
+                val nextRow = renderedRows[lastRow + 1]
+                val continuationLength = nextRow.text.indexOfFirst { it == ' ' || it == '\t' }
+                    .let { if (it < 0) nextRow.text.length else it }
+                if (continuationLength <= 0) break
+
+                val continuationRange = nextRow.cellRangeForText(0, continuationLength) ?: break
+                candidate.append(nextRow.text, 0, continuationLength)
+                lastCell = (lastRow + 1) * cols + continuationRange.last
+                lastRow++
+                canWrap = nextRow.text.substring(continuationLength).all { it == ' ' }
+            }
+
+            val url = normalizeTerminalLink(candidate.toString()) ?: continue
+            val link = TerminalLink(
+                url = url,
+                cellRange = (startRow * cols + firstRange.first)..lastCell,
+            )
+            if (cellIndex in link.cellRange) return link
+        }
+    }
+    return null
+}
+
+private data class RenderedTerminalLinkRow(
+    val row: Int,
+    val text: String,
+    val cellStarts: IntArray,
+    val cellEnds: IntArray,
+) {
+    fun cellRangeForText(start: Int, endExclusive: Int): IntRange? {
+        var first = -1
+        var last = -1
+        for (offset in cellStarts.indices) {
+            if (cellStarts[offset] < endExclusive && cellEnds[offset] > start) {
+                if (first < 0) first = offset
+                last = offset
+            }
+        }
+        return if (first >= 0) first..last else null
+    }
+}
+
+private fun TerminalSnapshot.renderTerminalLinkRow(row: Int): RenderedTerminalLinkRow {
     val rowStart = row * cols
     val rowEnd = minOf(rowStart + cols, codepoints.size)
     val cellStarts = IntArray(rowEnd - rowStart)
@@ -53,28 +106,7 @@ internal fun TerminalSnapshot.linkAt(cellIndex: Int): TerminalLink? {
         cellEnds[offset] = text.length
     }
 
-    val match = TERMINAL_LINK_PATTERN.findAll(text).firstOrNull { normalizeTerminalLink(it.value) != null }
-        ?: return null
-    val url = normalizeTerminalLink(match.value) ?: return null
-    var firstCell = -1
-    for (offset in cellStarts.indices) {
-        if (cellStarts[offset] < match.range.last + 1 && cellEnds[offset] > match.range.first) {
-            firstCell = offset
-            break
-        }
-    }
-    if (firstCell < 0) return null
-
-    var lastCell = firstCell
-    for (offset in firstCell until cellStarts.size) {
-        if (cellStarts[offset] >= match.range.last + 1) break
-        if (cellEnds[offset] > match.range.first) lastCell = offset
-    }
-    val link = TerminalLink(
-        url = url,
-        cellRange = (rowStart + firstCell)..(rowStart + lastCell),
-    )
-    return link.takeIf { cellIndex in it.cellRange }
+    return RenderedTerminalLinkRow(row, text.toString(), cellStarts, cellEnds)
 }
 
 private fun normalizeTerminalLink(rawCandidate: String): String? {
