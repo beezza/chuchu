@@ -62,6 +62,15 @@ class TerminalLinkTest {
         assertNull(snapshot.linkAt(cols + secondLine.length))
     }
 
+    @Test
+    fun findsLinksThatWrapInSelectedText() {
+        val url = "https://github.com/ggml-org/llama.cpp/releases/tag/b10930"
+        val firstLine = url.take(32)
+        val secondLine = url.drop(32)
+
+        assertEquals(url, findTerminalLink("$firstLine\n$secondLine"))
+    }
+
     private fun snapshotOf(text: String): TerminalSnapshot {
         val codepoints = text.codePoints().toArray()
         return TerminalSnapshot(
