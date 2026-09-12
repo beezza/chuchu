@@ -48,11 +48,48 @@ class TerminalLinkTest {
         assertNull(snapshot.linkAt(0))
     }
 
+    @Test
+    fun joinsLinksThatWrapAtTheTerminalEdge() {
+        val url = "https://github.com/ggml-org/llama.cpp/releases/tag/b10930"
+        val cols = 32
+        val firstLine = url.take(cols)
+        val secondLine = url.drop(cols)
+        val snapshot = snapshotOfRows(firstLine, secondLine)
+
+        assertEquals(url, snapshot.linkAt(0)?.url)
+        assertEquals(url, snapshot.linkAt(cols)?.url)
+        assertEquals(0..(cols + secondLine.lastIndex), snapshot.linkAt(cols)?.cellRange)
+        assertNull(snapshot.linkAt(cols + secondLine.length))
+    }
+
     private fun snapshotOf(text: String): TerminalSnapshot {
         val codepoints = text.codePoints().toArray()
         return TerminalSnapshot(
             cols = codepoints.size,
             rows = 1,
+            cursorX = 0,
+            cursorY = 0,
+            cursorVisible = false,
+            defaultBgArgb = 0xFF000000.toInt(),
+            defaultFgArgb = 0xFFFFFFFF.toInt(),
+            codepoints = codepoints,
+            fgArgb = IntArray(codepoints.size) { 0xFFFFFFFF.toInt() },
+            bgArgb = IntArray(codepoints.size) { 0xFF000000.toInt() },
+            flags = ByteArray(codepoints.size),
+        )
+    }
+
+    private fun snapshotOfRows(vararg lines: String): TerminalSnapshot {
+        val cols = lines.maxOf { it.length }
+        val codepoints = IntArray(cols * lines.size)
+        lines.forEachIndexed { row, line ->
+            line.codePoints().toArray().forEachIndexed { column, codepoint ->
+                codepoints[row * cols + column] = codepoint
+            }
+        }
+        return TerminalSnapshot(
+            cols = cols,
+            rows = lines.size,
             cursorX = 0,
             cursorY = 0,
             cursorVisible = false,
