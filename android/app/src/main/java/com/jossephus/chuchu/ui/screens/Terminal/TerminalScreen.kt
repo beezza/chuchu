@@ -104,6 +104,7 @@ import com.jossephus.chuchu.ui.terminal.TerminalCanvas
 import com.jossephus.chuchu.ui.terminal.TerminalCustomAction
 import com.jossephus.chuchu.ui.terminal.TerminalCustomKeyGroup
 import com.jossephus.chuchu.ui.terminal.TerminalInputView
+import com.jossephus.chuchu.ui.terminal.findTerminalLink
 import com.jossephus.chuchu.ui.terminal.TerminalSelection
 import com.jossephus.chuchu.ui.terminal.TerminalSelectionHandle
 import com.jossephus.chuchu.ui.terminal.TerminalSelectionState
@@ -151,6 +152,14 @@ private fun TerminalViewModel.dispatchTextWithModifierState(
         } else {
             onTextInput(modifierState.applyToText(char.toString()))
         }
+    }
+}
+
+private fun openTerminalLink(context: Context, url: String) {
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    }.onFailure {
+        Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -935,6 +944,12 @@ fun TerminalScreen(
                         selectionState = null
                     }
 
+                    fun openLink(url: String) {
+                        selection = null
+                        selectionState = null
+                        openTerminalLink(context, url)
+                    }
+
                     val importFileLauncher =
                         rememberLauncherForActivityResult(
                             contract = ActivityResultContracts.GetMultipleContents()
@@ -1285,6 +1300,7 @@ fun TerminalScreen(
                                     modifier = Modifier.fillMaxSize(),
                                     onResize = vm::onCanvasSizeChanged,
                                     onTap = requestInputFocus,
+                                    onOpenLink = ::openLink,
                                     onPrimaryClick = vm::onPrimaryMouseClick,
                                     onAppSelectionDrag = vm::onAppSelectionDrag,
                                     onScroll = vm::onScroll,
@@ -1356,6 +1372,7 @@ fun TerminalScreen(
                                     val selRight = selState.boundsRight
                                     val selTop = selState.boundsTop
                                     val selBottom = selState.boundsBottom
+                                    val selectedLink = selState.text?.let(::findTerminalLink)
                                     val centerX = (selLeft + selRight) / 2f
                                     val menuWidth = menuSize.width.coerceAtLeast(1)
                                     val menuHeight = menuSize.height.coerceAtLeast(1)
@@ -1375,6 +1392,25 @@ fun TerminalScreen(
                                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
+                                        if (selectedLink != null) {
+                                            ChuButton(
+                                                onClick = { openLink(selectedLink) },
+                                                variant = ChuButtonVariant.Ghost,
+                                                bracketed = true,
+                                                borderColor = colors.accent,
+                                                contentPadding =
+                                                    PaddingValues(
+                                                        horizontal = 12.dp,
+                                                        vertical = 6.dp,
+                                                    ),
+                                            ) {
+                                                ChuText(
+                                                    "open",
+                                                    style = typography.label,
+                                                    color = colors.accent,
+                                                )
+                                            }
+                                        }
                                         if (!selState.text.isNullOrEmpty()) {
                                             ChuButton(
                                                 onClick = ::copySelection,
