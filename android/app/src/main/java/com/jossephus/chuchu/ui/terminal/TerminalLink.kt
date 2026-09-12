@@ -58,7 +58,7 @@ internal fun TerminalSnapshot.linkAt(cellIndex: Int): TerminalLink? {
     val url = normalizeTerminalLink(match.value) ?: return null
     var firstCell = -1
     for (offset in cellStarts.indices) {
-        if (cellStarts[offset] < match.end && cellEnds[offset] > match.start) {
+        if (cellStarts[offset] < match.range.last + 1 && cellEnds[offset] > match.range.first) {
             firstCell = offset
             break
         }
@@ -67,8 +67,8 @@ internal fun TerminalSnapshot.linkAt(cellIndex: Int): TerminalLink? {
 
     var lastCell = firstCell
     for (offset in firstCell until cellStarts.size) {
-        if (cellStarts[offset] >= match.end) break
-        if (cellEnds[offset] > match.start) lastCell = offset
+        if (cellStarts[offset] >= match.range.last + 1) break
+        if (cellEnds[offset] > match.range.first) lastCell = offset
     }
     return TerminalLink(
         url = url,
