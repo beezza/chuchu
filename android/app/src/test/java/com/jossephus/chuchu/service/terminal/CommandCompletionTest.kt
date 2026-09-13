@@ -66,9 +66,20 @@ class CommandCompletionTest {
 
     @Test
     fun shellHooksAreSelectedWithoutTouchingStartupFiles() {
-        assertTrue(CommandCompletionShellHooks.install("-bash")!!.contains("PROMPT_COMMAND"))
-        assertTrue(CommandCompletionShellHooks.install("zsh")!!.contains("precmd_functions"))
-        assertTrue(CommandCompletionShellHooks.install("fish")!!.contains("fish_postexec"))
+        val bash = CommandCompletionShellHooks.install("-bash")!!
+        val zsh = CommandCompletionShellHooks.install("zsh")!!
+        val fish = CommandCompletionShellHooks.install("fish")!!
+        assertTrue(bash.contains("PROMPT_COMMAND"))
+        assertTrue(zsh.contains("precmd_functions"))
+        assertTrue(fish.contains("fish_postexec"))
+        listOf(bash, zsh, fish).forEach { hook ->
+            assertTrue(hook.contains("allow-passthrough"))
+            assertTrue(hook.contains("\\033Ptmux;"))
+            assertTrue(hook.contains("${'$'}{TMUX-}") || hook.contains("set -q TMUX"))
+        }
+        assertTrue(CommandCompletionShellHooks.detectionCommand.contains("allow-passthrough"))
+        assertTrue(CommandCompletionShellHooks.detectionCommand.contains("\\033Ptmux;"))
+        assertTrue(CommandCompletionShellHooks.fallbackDetectionCommand.contains("\\033Ptmux;"))
         assertNull(CommandCompletionShellHooks.install("sh"))
     }
 }
