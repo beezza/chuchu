@@ -37,6 +37,10 @@ class TerminalSessionRepository private constructor(application: Application) {
 
     private val appContext = application.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val _appInForeground = MutableStateFlow(false)
+    private val _terminalScreenVisible = MutableStateFlow(false)
+    private val _pendingOpenTabId = MutableStateFlow<String?>(null)
+    val pendingOpenTabId: StateFlow<String?> = _pendingOpenTabId.asStateFlow()
 
     private val hostKeyStore =
         HostKeyStore(appContext.getSharedPreferences(HostKeyStore.PREFS_NAME, Application.MODE_PRIVATE))
@@ -152,6 +156,37 @@ class TerminalSessionRepository private constructor(application: Application) {
         attachedClients = (attachedClients - 1).coerceAtLeast(0)
     }
 
+    fun setAppInForeground(inForeground: Boolean) {
+        _appInForeground.value = inForeground
+    }
+
+    fun setTerminalScreenVisible(visible: Boolean) {
+        _terminalScreenVisible.value = visible
+    }
+
+    fun requestOpenTab(id: String) {
+        _pendingOpenTabId.value = id
+    }
+
+    fun consumePendingOpenTab() {
+        _pendingOpenTabId.value = null
+    }
+
+    private fun onCommandCompleted(tabId: String, completion: CompletedCommand) {
+        scope.launch(Dispatchers.Main.immediate) {
+            val tab = _tabs.value.firstOrNull { it.id == tabId } ?: return@launch
+            val terminalVisible = _appInForeground.value && _terminalScreenVisible.value
+            if (!terminalVisible || _activeTabId.value != tabId) {
+                CommandCompletionNotifier.post(
+                    context = appContext,
+                    tabId = tabId,
+                    label = tab.spec.notificationLabel,
+                    completion = completion,
+                )
+            }
+        }
+    }
+
     private fun currentNotificationLabel(): String {
         val tabs = _tabs.value
         if (tabs.isEmpty()) return "Active session"
@@ -228,6 +263,9 @@ class TerminalSessionRepository private constructor(application: Application) {
                 newLocalShellService(),
                 hostKeyStore,
                 tailscaleStatusChecker,
+                publishCompletedCommand = { completion ->
+                    onCommandCompleted(id, completion)
+                },
             )
         val tab = TabSession(id, spec, engine)
         _tabs.value = _tabs.value + tab
