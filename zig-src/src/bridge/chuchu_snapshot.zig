@@ -48,6 +48,10 @@ const IMAGE_HEADER_BYTES = 52;
 const MAX_KITTY_IMAGES = 64;
 const MAX_OSC52_CLIPBOARD_BYTES = 1024 * 1024;
 const MAX_OSC7_PWD_BYTES = 4096;
+const MAX_COMMAND_EVENT_BYTES: usize = 4096;
+const MAX_COMMAND_EVENT_BUFFER_BYTES: usize = 16 * 1024;
+const COMMAND_SHELL_EVENT_PREFIX = "chuchu-shell;";
+const COMMAND_DONE_EVENT_PREFIX = "chuchu-command-done;";
 // Kitty Unicode graphics placeholder (U+10EEEE). These cells only mark where an
 // image is composited; we blank them so the raw glyph never shows through a gap
 // the image doesn't fully cover.
@@ -141,6 +145,8 @@ const ChuchuTerminal = struct {
     image_snapshot_buffer: std.ArrayListUnmanaged(u8) = .empty,
     pty_write_buffer: std.ArrayListUnmanaged(u8) = .empty,
     pty_write_len: usize = 0,
+    command_event_buffer: std.ArrayListUnmanaged(u8) = .empty,
+    command_event_dirty: bool = false,
     snapshot_perf_calls: u64 = 0,
     snapshot_perf_total_ns: u64 = 0,
     snapshot_perf_last_log_ns: i64 = 0,
@@ -165,6 +171,9 @@ const ChuchuStreamHandler = struct {
         if (action == .report_pwd) {
             self.reportPwd(value.url);
         }
+        if (action == .show_desktop_notification) {
+            if (self.commandNotification(value.body)) return;
+        }
         self.inner.vt(action, value);
     }
 
@@ -178,6 +187,22 @@ const ChuchuStreamHandler = struct {
         const pwd = decodeOsc7FilePath(url, &decoded) orelse return;
         // Chuchu terminals are remote, so their reported path is useful even when the URL host is not local.
         self.owner.terminal.setPwd(pwd) catch return;
+    }
+
+    fn commandNotification(self: *ChuchuStreamHandler, body: []const u8) bool {
+        if (!std.mem.startsWith(u8, body, COMMAND_SHELL_EVENT_PREFIX) and
+            !std.mem.startsWith(u8, body, COMMAND_DONE_EVENT_PREFIX)) return false;
+        if (body.len == 0 or body.len > MAX_COMMAND_EVENT_BYTES) return true;
+        const owner = self.owner;
+        const extra = body.len + 1;
+        if (extra > MAX_COMMAND_EVENT_BUFFER_BYTES or
+            owner.command_event_buffer.items.len > MAX_COMMAND_EVENT_BUFFER_BYTES - extra) return true;
+        const old_len = owner.command_event_buffer.items.len;
+        _ = ensureListSize(&owner.command_event_buffer, old_len + extra) orelse return true;
+        @memcpy(owner.command_event_buffer.items[old_len .. old_len + body.len], body);
+        owner.command_event_buffer.items[old_len + body.len] = '\n';
+        owner.command_event_dirty = true;
+        return true;
     }
 };
 
@@ -530,6 +555,7 @@ export fn chuchu_destroy_terminal(handle: c.jlong) callconv(.c) void {
     terminal.snapshot_extras_scratch.deinit(allocator);
     terminal.image_snapshot_buffer.deinit(allocator);
     terminal.pty_write_buffer.deinit(allocator);
+    terminal.command_event_buffer.deinit(allocator);
     if (terminal.title) |buf| allocator.free(buf);
     if (terminal.pwd) |buf| allocator.free(buf);
     if (terminal.clipboard) |buf| allocator.free(buf);
@@ -641,6 +667,17 @@ export fn Java_com_jossephus_chuchu_service_terminal_GhosttyBridge_nativePollCli
     _ = thiz;
     const bytes = chuchu_poll_clipboard(handle) orelse return null;
     return jniByteArrayFromBytes(env, bytes);
+}
+
+export fn Java_com_jossephus_chuchu_service_terminal_GhosttyBridge_nativePollCommandEvents(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong) callconv(.c) c.jbyteArray {
+    _ = thiz;
+    const terminal = chuchuFromHandle(handle) orelse return null;
+    if (!terminal.command_event_dirty or terminal.command_event_buffer.items.len == 0) return null;
+    const out = jniByteArrayFromBytes(env, terminal.command_event_buffer.items);
+    if (out == null) return null;
+    terminal.command_event_buffer.clearRetainingCapacity();
+    terminal.command_event_dirty = false;
+    return out;
 }
 
 export fn Java_com_jossephus_chuchu_service_terminal_GhosttyBridge_nativeDrainBellCount(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong) callconv(.c) c.jint {
