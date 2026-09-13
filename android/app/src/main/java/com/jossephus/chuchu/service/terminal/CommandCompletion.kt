@@ -4,6 +4,8 @@ import java.util.ArrayDeque
 import java.util.Locale
 
 private const val SHELL_DOLLAR = "\$"
+private const val TMUX_PASSTHROUGH_SETUP =
+    "tmux set-option -p allow-passthrough on >/dev/null 2>&1"
 internal const val GHOSTTY_ENTER_KEY = 58
 internal const val GHOSTTY_RELEASE_ACTION = 0
 
@@ -105,12 +107,19 @@ internal object CommandCompletionShellHooks {
     /** Emits the login shell path without touching shell startup files. */
     val detectionCommand: String =
         // $SHELL is understood by bash, zsh, and fish (unlike bash's $0 syntax, which fish
-        // deliberately does not implement). The path is normalized by the receiver.
-        "printf '\\033]9;chuchu-shell;%s\\007' \"${'$'}SHELL\""
+        // deliberately does not implement). The path is normalized by the receiver. tmux
+        // consumes ordinary OSC sequences, so emit both the normal form and its DCS passthrough
+        // form. The normal form is recognized outside tmux; the passthrough form is recognized
+        // inside tmux after the pane option is enabled below.
+        "${TMUX_PASSTHROUGH_SETUP}; " +
+            "printf '\\033]9;chuchu-shell;%s\\007' \"${'$'}SHELL\"; " +
+            "printf '\\033Ptmux;\\033\\033]9;chuchu-shell;%s\\007\\033\\\\' \"${'$'}SHELL\""
 
     /** Bash/zsh fallback for hosts that do not export SHELL to an interactive session. */
     val fallbackDetectionCommand: String =
-        "printf '\\033]9;chuchu-shell;%s\\007' \"${'$'}0\""
+        "${TMUX_PASSTHROUGH_SETUP}; " +
+            "printf '\\033]9;chuchu-shell;%s\\007' \"${'$'}0\"; " +
+            "printf '\\033Ptmux;\\033\\033]9;chuchu-shell;%s\\007\\033\\\\' \"${'$'}0\""
 
     fun install(shellName: String): String? {
         val shell =
@@ -130,20 +139,33 @@ internal object CommandCompletionShellHooks {
     // Keep the hook in the current shell only. This is deliberately sent as one command so it
     // also works when the PTY is an already-attached tmux or zellij pane.
     private val bashHook: String =
-        "__chuchu_done(){ local __chuchu_status=${'$'}?; " +
-            "printf '\\033]9;chuchu-command-done;%s\\007' \"${'$'}__chuchu_status\"; }; " +
+        "${TMUX_PASSTHROUGH_SETUP}; " +
+            "__chuchu_done(){ local __chuchu_status=${'$'}?; " +
+            "if [ -n \"${'$'}{TMUX-}\" ]; then " +
+            "${TMUX_PASSTHROUGH_SETUP}; " +
+            "printf '\\033Ptmux;\\033\\033]9;chuchu-command-done;%s\\007\\033\\\\' \"${'$'}__chuchu_status\"; " +
+            "else printf '\\033]9;chuchu-command-done;%s\\007' \"${'$'}__chuchu_status\"; fi; }; " +
             "case \";${'$'}{PROMPT_COMMAND-};\" in *\";__chuchu_done;\"*) ;; *) " +
             "PROMPT_COMMAND=\"__chuchu_done${'$'}{PROMPT_COMMAND:+;${'$'}PROMPT_COMMAND}\";; esac"
 
     private val zshHook: String =
-        "__chuchu_done() { local __chuchu_status=${'$'}?; " +
-            "printf '\\033]9;chuchu-command-done;%s\\007' \"${'$'}__chuchu_status\"; }; " +
+        "${TMUX_PASSTHROUGH_SETUP}; " +
+            "__chuchu_done() { local __chuchu_status=${'$'}?; " +
+            "if [ -n \"${'$'}{TMUX-}\" ]; then " +
+            "${TMUX_PASSTHROUGH_SETUP}; " +
+            "printf '\\033Ptmux;\\033\\033]9;chuchu-command-done;%s\\007\\033\\\\' \"${'$'}__chuchu_status\"; " +
+            "else printf '\\033]9;chuchu-command-done;%s\\007' \"${'$'}__chuchu_status\"; fi; }; " +
             "precmd_functions=(${SHELL_DOLLAR}{precmd_functions:#__chuchu_done}); " +
             "precmd_functions+=(__chuchu_done)"
 
     private val fishHook: String =
-        "functions -q __chuchu_done; and functions --erase __chuchu_done; " +
+        "${TMUX_PASSTHROUGH_SETUP}; " +
+            "functions -q __chuchu_done; and functions --erase __chuchu_done; " +
             "function __chuchu_done --on-event fish_postexec; " +
             "set -l __chuchu_status ${'$'}status; " +
-            "printf '\\033]9;chuchu-command-done;%s\\007' \"${'$'}__chuchu_status\"; end"
+            "if set -q TMUX; " +
+            "${TMUX_PASSTHROUGH_SETUP}; " +
+            "printf '\\033Ptmux;\\033\\033]9;chuchu-command-done;%s\\007\\033\\\\' \"${'$'}__chuchu_status\"; " +
+            "else; printf '\\033]9;chuchu-command-done;%s\\007' \"${'$'}__chuchu_status\"; " +
+            "end; end"
 }
