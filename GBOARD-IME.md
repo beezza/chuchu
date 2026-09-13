@@ -26,6 +26,11 @@ visible. The notification shows the exit status and duration, never the command
 text; tapping it returns to that session. The hook is installed only in the
 current interactive shell, so it also follows SSH sessions inside tmux or
 Zellij without changing remote dotfiles. Bash, zsh, and fish are supported.
+For tmux, ChuChu enables the current pane's `allow-passthrough` option and
+uses tmux DCS passthrough so OSC 9 is not consumed by tmux. This requires a
+tmux version with `allow-passthrough` (3.3 or newer); if the server policy
+disallows changing pane options, add `set -g allow-passthrough on` to
+`~/.tmux.conf` and restart or reload the tmux server.
 
 The existing live terminal preview of composing text is retained. Intermediate
 readings are still sent to the remote terminal and replaced with Backspace when
@@ -83,13 +88,3 @@ keyboard is visible. Run the checks with it visible and hidden.
 - APK SHA-256: `a242df681f680e6162937f5f6ccd759d95fba4b65b2e36173828190fb11737fc`.
   The downloaded archive digest matched GitHub Actions, and the APK includes
   `lib/arm64-v8a/libchuchu_jni.so`.
-- Gboard/physical keyboard on a real device: **not tested**. Robolectric does
-  not run Gboard or prove that a specific Gboard/device combination is fixed.
-- Fork: [beezza/chuchu](https://github.com/beezza/chuchu/tree/fix/gboard-hardware-ime).
-  All code changes are saved on `fix/gboard-hardware-ime`.
-
-## References
-
-- [InputConnectionWrapper](https://developer.android.com/reference/android/view/inputmethod/InputConnectionWrapper)
-- [InputType](https://developer.android.com/reference/android/text/InputType)
-- [Robolectric](https://robolectric.org/)
