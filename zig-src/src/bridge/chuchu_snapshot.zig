@@ -28,11 +28,11 @@ const verbose_snapshot_perf_logs = false;
 //  12  viewport_scroll_y (screen.y of the content at viewport row 0; stable
 //      content coordinate that changes as the viewport scrolls, so the host
 //      can remap a content-tracking selection anchor across scrolls)
-//  13  app_handles_selection_drag (1 when the running app has enabled a
+//  13  app_handles_selection_drag (1 when a full-screen app has enabled a
 //      drag-reporting mouse mode — DECSET 1002/1003 — so the host forwards
 //      long-press drag gestures to the app instead of starting a client-side
-//      grid selection. This is what lets tmux/zellij perform their own
-//      pane-scoped selection.)
+//      grid selection. In a normal tmux pane the host keeps the gesture for
+//      text selection; tmux mouse-wheel scrolling remains enabled separately.)
 //  14  cursor_style (the visual shape the app requested via DECSCUSR:
 //      0 = block, 1 = bar, 2 = underline, 3 = block_hollow)
 const SNAPSHOT_HEADER_I32_COUNT = 15;
@@ -109,7 +109,13 @@ const MouseEncodingSize = struct {
     padding_right: u32 = 0,
 };
 
-fn appHandlesSelectionDrag(event: anytype) bool {
+fn appHandlesSelectionDrag(event: anytype, in_alt_screen: bool) bool {
+    // A multiplexer such as tmux enables mouse reporting for its normal panes
+    // too. Treating every such pane as app-owned makes a long press impossible
+    // to use for host-side text selection. Full-screen terminal applications
+    // (vim, htop, etc.) still receive the drag so their mouse interactions keep
+    // working.
+    if (!in_alt_screen) return false;
     return switch (event) {
         .button, .any => true,
         else => false,
@@ -941,10 +947,13 @@ export fn chuchu_build_text_snapshot(handle: c.jlong, out_size: [*c]usize) callc
         break :blk @intCast(vp_top.screen.y);
     };
     writeIntLe(i32, buffer[0..base_total_size], 48, viewport_scroll_y);
-    // app_handles_selection_drag: 1 only for drag-reporting mouse modes
-    // (DECSET 1002/1003). Click-only mouse modes still allow the host to keep
-    // its own long-press selection behavior.
-    const app_handles_selection_drag: i32 = if (appHandlesSelectionDrag(terminal.terminal.flags.mouse_event)) 1 else 0;
+    // app_handles_selection_drag: full-screen apps with drag-reporting mouse
+    // modes (DECSET 1002/1003) own a long-press drag. tmux's normal panes may
+    // also report mouse events, but those keep host-side text selection.
+    const in_alt_screen = terminal.terminal.modes.get(.alt_screen) or
+        terminal.terminal.modes.get(.alt_screen_legacy) or
+        terminal.terminal.modes.get(.alt_screen_save_cursor_clear_enter);
+    const app_handles_selection_drag: i32 = if (appHandlesSelectionDrag(terminal.terminal.flags.mouse_event, in_alt_screen)) 1 else 0;
     writeIntLe(i32, buffer[0..base_total_size], 52, app_handles_selection_drag);
     const cursor_style: i32 = switch (terminal.render_state.cursor.visual_style) {
         .block => 0,
