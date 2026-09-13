@@ -17,7 +17,10 @@ internal object CommandCompletionNotifier {
     const val ACTION_OPEN_TAB = "com.jossephus.chuchu.action.OPEN_TERMINAL_TAB"
     const val EXTRA_TAB_ID = "extra_terminal_tab_id"
 
-    private const val CHANNEL_ID = "chuchu_command_completion"
+    // Channel importance is immutable after a channel is created. Keep a new
+    // id so users upgrading from the original DEFAULT channel get the
+    // heads-up behavior without having to delete the old channel manually.
+    private const val CHANNEL_ID = "chuchu_command_completion_heads_up"
     private const val CHANNEL_NAME = "Command completion"
     private const val NOTIFICATION_ID_START = 3000
     private val nextNotificationId = AtomicInteger(NOTIFICATION_ID_START)
@@ -66,7 +69,7 @@ internal object CommandCompletionNotifier {
                 .setContentIntent(tapPending)
                 .setAutoCancel(true)
                 .setCategory(NotificationCompat.CATEGORY_STATUS)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setWhen(System.currentTimeMillis())
                 .setShowWhen(true)
                 .build()
@@ -84,9 +87,14 @@ internal object CommandCompletionNotifier {
             NotificationChannel(
                 CHANNEL_ID,
                 CHANNEL_NAME,
-                NotificationManager.IMPORTANCE_DEFAULT,
+                NotificationManager.IMPORTANCE_HIGH,
             ).apply {
                 description = "Notifies when a long-running terminal command completes"
+                // Keep the alert noticeable without adding another loud
+                // notification sound on top of the foreground-service notice.
+                setSound(null, null)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0L, 120L)
             },
         )
     }
