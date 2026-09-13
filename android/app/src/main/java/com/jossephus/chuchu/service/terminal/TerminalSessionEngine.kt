@@ -73,6 +73,7 @@ class TerminalSessionEngine(
     private val localShellService: NativeLocalShellService,
     private val hostKeyStore: HostKeyStore,
     private val tailscaleStatusChecker: TailscaleStatusChecker,
+    private val publishCompletedCommand: (CompletedCommand) -> Unit = {},
 ) {
     private data class ConnectionParams(
         val host: String,
@@ -132,6 +133,9 @@ class TerminalSessionEngine(
     private var lastConnectionParams: ConnectionParams? = null
     private var reconnectJob: Job? = null
     private var disconnectRequested = false
+    private val commandCompletionTracker = CommandCompletionTracker()
+    private var shellHookInstallAttempted = false
+    private var shellFallbackDetectionAttempted = false
 
 
     private val nativeVersion =
@@ -294,6 +298,10 @@ class TerminalSessionEngine(
             if (encoded.isEmpty()) return@launch
             try {
                 writeRemote(encoded)
+                commandCompletionTracker.recordInput(
+                    encoded,
+                    logicalEnter = key == GHOSTTY_ENTER_KEY && action != GHOSTTY_RELEASE_ACTION,
+                )
             } catch (_: Exception) {}
         }
     }
@@ -303,7 +311,9 @@ class TerminalSessionEngine(
             if (handle == 0L) return@launch
             if (text.isEmpty()) return@launch
             try {
-                writeRemote(text.toByteArray(Charsets.UTF_8))
+                val encoded = text.toByteArray(Charsets.UTF_8)
+                writeRemote(encoded)
+                commandCompletionTracker.recordInput(encoded)
             } catch (_: Exception) {}
         }
     }
@@ -316,6 +326,7 @@ class TerminalSessionEngine(
             if (encoded.isEmpty()) return@launch
             try {
                 writeRemote(encoded)
+                commandCompletionTracker.recordInput(encoded)
             } catch (_: Exception) {}
         }
     }
@@ -829,6 +840,9 @@ class TerminalSessionEngine(
     }
 
     private suspend fun establishConnection(params: ConnectionParams, username: String) {
+        commandCompletionTracker.reset()
+        shellHookInstallAttempted = false
+        shellFallbackDetectionAttempted = false
         if (handle != 0L) {
             bridge.nativeDestroy(handle)
             handle = 0L
@@ -1159,7 +1173,12 @@ class TerminalSessionEngine(
     private suspend fun sendStartupCommand(params: ConnectionParams) {
         // Multiplexer startup is dispatched through openExecPty before this runs. Later writes on
         // that PTY follow the exec request, so the command is consumed by the attached session.
+        sendShellDetectionCommand()
         sendPostConnectCommand(params.postConnectCommand)
+    }
+
+    private fun sendShellDetectionCommand() {
+        sendInteractiveCommand(CommandCompletionShellHooks.detectionCommand, "shell detection")
     }
 
     private fun sendPostConnectCommand(command: String?) {
@@ -1173,6 +1192,47 @@ class TerminalSessionEngine(
             writeRemote("$command\n".toByteArray(Charsets.UTF_8))
         } catch (e: Exception) {
             Log.e("TerminalSession", "$logLabel failed", e)
+        }
+    }
+
+    private fun handleControlEvent(raw: String) {
+        when (val event = ChuchuControlEventParser.parse(raw)) {
+            is ChuchuControlEvent.ShellDetected -> {
+                if (event.shell.isBlank()) {
+                    if (!shellFallbackDetectionAttempted) {
+                        shellFallbackDetectionAttempted = true
+                        sendInteractiveCommand(
+                            CommandCompletionShellHooks.fallbackDetectionCommand,
+                            "shell fallback detection",
+                        )
+                    }
+                    return
+                }
+                if (shellHookInstallAttempted) return
+                val hook = CommandCompletionShellHooks.install(event.shell)
+                if (hook == null) {
+                    if (!shellFallbackDetectionAttempted) {
+                        shellFallbackDetectionAttempted = true
+                        sendInteractiveCommand(
+                            CommandCompletionShellHooks.fallbackDetectionCommand,
+                            "shell fallback detection",
+                        )
+                        return
+                    }
+                    shellHookInstallAttempted = true
+                    Log.d("TerminalSession", "Command notifications unsupported for shell ${event.shell}")
+                    return
+                }
+                shellHookInstallAttempted = true
+                commandCompletionTracker.reset()
+                sendInteractiveCommand(hook, "command notification hook")
+            }
+            is ChuchuControlEvent.CommandDone -> {
+                commandCompletionTracker.commandCompleted(event.exitCode)?.let { completed ->
+                    publishCompletedCommand(completed)
+                }
+            }
+            null -> Unit
         }
     }
 
@@ -1270,6 +1330,7 @@ class TerminalSessionEngine(
             val nextTitle = bridge.nativePollTitle(handle)
             val nextPwd = bridge.nativePollPwd(handle)
             val nextClipboard = bridge.nativePollClipboard(handle)
+            val commandEvents = bridge.nativePollCommandEvents(handle)
             val bellCount = bridge.nativeDrainBellCount(handle)
             if (nextTitle != null) {
                 title = nextTitle
@@ -1280,6 +1341,11 @@ class TerminalSessionEngine(
             if (nextClipboard != null) {
                 publishClipboard(nextClipboard.toString(Charsets.UTF_8))
             }
+            commandEvents
+                ?.toString(Charsets.UTF_8)
+                ?.lineSequence()
+                ?.filter { it.isNotBlank() }
+                ?.forEach(::handleControlEvent)
             _state.value =
                 _state.value.copy(
                     snapshot = snap,
