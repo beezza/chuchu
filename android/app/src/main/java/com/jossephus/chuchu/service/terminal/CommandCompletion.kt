@@ -8,7 +8,7 @@ internal const val GHOSTTY_ENTER_KEY = 58
 internal const val GHOSTTY_RELEASE_ACTION = 0
 
 /** A command that ran long enough to be useful as a completion notification. */
-internal data class CompletedCommand(
+data class CompletedCommand(
     val exitCode: Int,
     val durationMs: Long,
 )
