@@ -23,7 +23,12 @@ Experimental fix based on upstream `jossephus/chuchu` commit
 When a command runs for at least five seconds, Chuchu can post a notification
 after it finishes if the app is in the background or another terminal tab is
 visible. The notification shows the exit status and duration, never the command
-text; tapping it returns to that session. The hook is installed only in the
+text; tapping it returns to that session. Completion notifications use their
+own high-importance channel so they appear as a heads-up popup even while the
+low-importance `Chuchu connected` foreground-service notification is present.
+They use a short vibration without an additional notification sound. If the
+channel was disabled or changed in Android's notification settings, re-enable
+`Command completion` there. The hook is installed only in the
 current interactive shell, so it also follows SSH sessions inside tmux or
 Zellij without changing remote dotfiles. Bash, zsh, and fish are supported.
 For tmux, ChuChu enables the current pane's `allow-passthrough` option and
@@ -88,3 +93,13 @@ keyboard is visible. Run the checks with it visible and hidden.
 - APK SHA-256: `a242df681f680e6162937f5f6ccd759d95fba4b65b2e36173828190fb11737fc`.
   The downloaded archive digest matched GitHub Actions, and the APK includes
   `lib/arm64-v8a/libchuchu_jni.so`.
+- Gboard/physical keyboard on a real device: **not tested**. Robolectric does
+  not run Gboard or prove that a specific Gboard/device combination is fixed.
+- Fork: [beezza/chuchu](https://github.com/beezza/chuchu/tree/fix/gboard-hardware-ime).
+  All code changes are saved on `fix/gboard-hardware-ime`.
+
+## References
+
+- [InputConnectionWrapper](https://developer.android.com/reference/android/view/inputmethod/InputConnectionWrapper)
+- [InputType](https://developer.android.com/reference/android/text/InputType)
+- [Robolectric](https://robolectric.org/)
