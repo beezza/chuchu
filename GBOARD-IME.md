@@ -36,6 +36,10 @@ uses tmux DCS passthrough so OSC 9 is not consumed by tmux. This requires a
 tmux version with `allow-passthrough` (3.3 or newer); if the server policy
 disallows changing pane options, add `set -g allow-passthrough on` to
 `~/.tmux.conf` and restart or reload the tmux server.
+In a normal tmux pane, a long press followed by a drag is kept as Chuchu's
+host-side text selection, so it can be copied with `Ctrl+Shift+C`; short
+vertical drags still send wheel events to tmux for scrolling. Full-screen
+programs that use the alternate screen retain app-owned mouse drags.
 
 The existing live terminal preview of composing text is retained. Intermediate
 readings are still sent to the remote terminal and replaced with Backspace when
