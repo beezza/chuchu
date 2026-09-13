@@ -1,6 +1,7 @@
 package com.jossephus.chuchu.ui.screens.Terminal
 
 import android.app.Activity
+import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -73,6 +74,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jossephus.chuchu.data.repository.SettingsRepository
@@ -80,6 +82,7 @@ import com.jossephus.chuchu.model.AuthMethod
 import com.jossephus.chuchu.model.Transport
 import com.jossephus.chuchu.service.terminal.SessionStatus
 import com.jossephus.chuchu.service.terminal.TabSpec
+import com.jossephus.chuchu.service.terminal.TerminalSessionRepository
 import com.jossephus.chuchu.ui.components.ChuButton
 import com.jossephus.chuchu.ui.components.ChuButtonVariant
 import com.jossephus.chuchu.ui.components.ChuDialog
@@ -325,6 +328,28 @@ fun TerminalScreen(
     val hostKeyPrompt by vm.hostKeyPrompt.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val sessionRepository = remember(context) {
+        TerminalSessionRepository.getInstance(
+            context.applicationContext as Application,
+        )
+    }
+    DisposableEffect(lifecycleOwner, sessionRepository) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> sessionRepository.setTerminalScreenVisible(true)
+                Lifecycle.Event.ON_STOP -> sessionRepository.setTerminalScreenVisible(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        sessionRepository.setTerminalScreenVisible(
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+        )
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            sessionRepository.setTerminalScreenVisible(false)
+        }
+    }
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
     val colors = ChuColors.current
