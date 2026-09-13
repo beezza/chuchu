@@ -6,6 +6,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
@@ -20,6 +21,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.jossephus.chuchu.data.repository.SettingsRepository
+import com.jossephus.chuchu.model.Transport
+import com.jossephus.chuchu.service.terminal.TerminalSessionRepository
 import com.jossephus.chuchu.ui.screens.AddServer.AddServerScreen
 import com.jossephus.chuchu.ui.screens.AddServer.AddServerViewModel
 import com.jossephus.chuchu.ui.screens.Keys.KeysViewModel
@@ -38,6 +41,9 @@ fun ApplicationNavController() {
     val context = LocalContext.current
     val application = context.applicationContext as Application
     val lifecycleOwner = LocalLifecycleOwner.current
+    val sessionRepository = remember(application) { TerminalSessionRepository.getInstance(application) }
+    val openTabs by sessionRepository.tabs.collectAsStateWithLifecycle()
+    val pendingOpenTabId by sessionRepository.pendingOpenTabId.collectAsStateWithLifecycle()
     var appUnlocked by rememberSaveable { mutableStateOf(false) }
     var unlockPromptRequested by rememberSaveable { mutableStateOf(false) }
     var appLockBlockedUntilToggle by rememberSaveable { mutableStateOf(false) }
@@ -56,6 +62,22 @@ fun ApplicationNavController() {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(pendingOpenTabId, openTabs) {
+        val tabId = pendingOpenTabId ?: return@LaunchedEffect
+        val tab = openTabs.firstOrNull { it.id == tabId } ?: return@LaunchedEffect
+        sessionRepository.selectTab(tab.id)
+        val route =
+            if (tab.spec.transport == Transport.LocalShell) {
+                "terminal/local"
+            } else {
+                tab.spec.hostId?.let { "terminal/$it" }
+            }
+        if (route != null) {
+            navController.navigate(route) { launchSingleTop = true }
+        }
+        sessionRepository.consumePendingOpenTab()
     }
 
     NavHost(navController = navController, startDestination = "servers") {
