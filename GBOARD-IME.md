@@ -18,6 +18,15 @@ Experimental fix based on upstream `jossephus/chuchu` commit
 - Keep ordinary physical-key routing after Android's IME dispatch. No pre-IME
   interception is added; Ctrl/Alt/Shift terminal shortcuts retain their path.
 
+## Command completion notifications
+
+When a command runs for at least five seconds, Chuchu can post a notification
+after it finishes if the app is in the background or another terminal tab is
+visible. The notification shows the exit status and duration, never the command
+text; tapping it returns to that session. The hook is installed only in the
+current interactive shell, so it also follows SSH sessions inside tmux or
+Zellij without changing remote dotfiles. Bash, zsh, and fish are supported.
+
 The existing live terminal preview of composing text is retained. Intermediate
 readings are still sent to the remote terminal and replaced with Backspace when
 the IME changes candidates. This is not a commit-only input mode, and terminal
