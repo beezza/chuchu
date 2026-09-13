@@ -48,11 +48,11 @@ data class TerminalSnapshot(
      */
     val viewportScrollY: Int = 0,
     /**
-     * True when the running app has enabled a drag-reporting mouse mode
+     * True when a full-screen app has enabled a drag-reporting mouse mode
      * (DECSET 1002/1003). When set, the host forwards long-press drag
-     * gestures to the app so a multiplexer (tmux/zellij/...) can perform
-     * its own pane-scoped selection in copy mode instead of the host
-     * building a grid-wide client-side selection that crosses pane borders.
+     * gestures to the app. Normal tmux panes keep long-press gestures for
+     * host-side text selection while their mouse-wheel events are still
+     * forwarded to tmux.
      */
     val appHandlesSelectionDrag: Boolean = false,
 ) {
