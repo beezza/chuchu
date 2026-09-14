@@ -19,11 +19,24 @@ data class CompletedCommand(
 internal sealed interface ChuchuControlEvent {
     data class ShellDetected(val shell: String) : ChuchuControlEvent
     data class CommandDone(val exitCode: Int) : ChuchuControlEvent
+    /** A coding agent finished a turn but kept its interactive process alive. */
+    data class AgentDone(val exitCode: Int) : ChuchuControlEvent
 }
 
 internal object ChuchuControlEventParser {
     private const val SHELL_PREFIX = "chuchu-shell;"
     private const val COMMAND_DONE_PREFIX = "chuchu-command-done;"
+    private const val AGENT_DONE_PREFIX = "chuchu-agent-done;"
+
+    // Codex's built-in OSC 9 notification uses human-readable text, while Pi
+    // extensions commonly use one of the ready-for-input messages below. Keep
+    // these exact markers narrow so arbitrary OSC 9 messages do not become
+    // Android command notifications.
+    private const val CODEX_AGENT_EVENT = "agent-turn-complete"
+    private const val CODEX_AGENT_EVENT_TEXT = "agent turn complete"
+    private const val PI_AGENT_EVENT = "pi: ready for input"
+    private const val PI_AGENT_EVENT_SHORT = "ready for input"
+    private const val PI_AGENT_EVENT_COMPLETE = "pi turn complete"
 
     fun parse(raw: String): ChuchuControlEvent? {
         val line = raw.trim()
@@ -43,8 +56,34 @@ internal object ChuchuControlEventParser {
                             }
                 status?.let { ChuchuControlEvent.CommandDone(it) }
             }
+            line.startsWith(AGENT_DONE_PREFIX) -> {
+                val payload = line.removePrefix(AGENT_DONE_PREFIX).trim()
+                val status =
+                    payload.toIntOrNull()
+                        ?: payload
+                            .split(';')
+                            .firstNotNullOfOrNull { field ->
+                                field.removePrefix("status=").toIntOrNull()
+                            }
+                status?.let { ChuchuControlEvent.AgentDone(it) }
+            }
+            isAgentCompletionMessage(line) -> ChuchuControlEvent.AgentDone(exitCode = 0)
             else -> null
         }
+    }
+
+    private fun isAgentCompletionMessage(line: String): Boolean {
+        val normalized = line.lowercase(Locale.ROOT)
+        return normalized == CODEX_AGENT_EVENT ||
+            normalized.startsWith("$CODEX_AGENT_EVENT;") ||
+            normalized == "agentturncomplete" ||
+            normalized == CODEX_AGENT_EVENT_TEXT ||
+            normalized.startsWith("$CODEX_AGENT_EVENT_TEXT:") ||
+            normalized.startsWith("codex: $CODEX_AGENT_EVENT_TEXT") ||
+            normalized == PI_AGENT_EVENT ||
+            normalized == PI_AGENT_EVENT_SHORT ||
+            normalized == PI_AGENT_EVENT_COMPLETE ||
+            normalized.startsWith("$PI_AGENT_EVENT_COMPLETE:")
     }
 }
 
@@ -87,6 +126,22 @@ internal class CommandCompletionTracker(
     fun commandCompleted(exitCode: Int): CompletedCommand? {
         if (commandStarts.isEmpty()) return null
         val startedAt = commandStarts.removeFirst()
+        val durationMs = (nowMs() - startedAt).coerceAtLeast(0L)
+        return CompletedCommand(exitCode, durationMs).takeIf {
+            durationMs >= minimumDurationMs
+        }
+    }
+
+    /**
+     * Completes the current interactive-agent turn and drops stale prompt
+     * markers. Agent TUIs keep the shell process alive, so their completion
+     * event is not FIFO-equivalent to a shell prompt: the queue may contain
+     * the initial `codex`/`pi` launch and one or more approval Enter keys.
+     */
+    fun agentCompleted(exitCode: Int): CompletedCommand? {
+        if (commandStarts.isEmpty()) return null
+        val startedAt = commandStarts.removeFirst()
+        commandStarts.clear()
         val durationMs = (nowMs() - startedAt).coerceAtLeast(0L)
         return CompletedCommand(exitCode, durationMs).takeIf {
             durationMs >= minimumDurationMs
