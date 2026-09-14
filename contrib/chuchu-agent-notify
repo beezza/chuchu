@@ -1,0 +1,41 @@
+#!/bin/sh
+# Bridge Codex's notify callback to Chuchu's OSC 9 control event.
+#
+# Codex passes a JSON notification payload as the first argument. The callback
+# is intentionally quiet for notification kinds this bridge does not know;
+# this keeps future Codex notifications from becoming false completions.
+set -eu
+
+payload=${1-}
+if [ -n "$payload" ]; then
+    case "$payload" in
+        *agent-turn-complete*) ;;
+        *) exit 0 ;;
+    esac
+fi
+
+status=0
+
+emit() {
+    if [ -n "${TMUX-}" ]; then
+        # tmux consumes OSC 9 unless it is inside a DCS passthrough wrapper.
+        printf '\033Ptmux;\033\033]9;chuchu-agent-done;%s\007\033\\' "$status"
+    else
+        printf '\033]9;chuchu-agent-done;%s\007' "$status"
+    fi
+}
+
+if [ -n "${TMUX-}" ] && command -v tmux >/dev/null 2>&1; then
+    tmux set-option -p allow-passthrough on >/dev/null 2>&1 || true
+fi
+
+# /dev/tty keeps Codex's callback output out of its TUI/log stream. CHUCHU_NOTIFY_TTY
+# is useful when the callback runs in a wrapper with a different controlling tty.
+notify_tty=${CHUCHU_NOTIFY_TTY-/dev/tty}
+if emit >"$notify_tty" 2>/dev/null; then
+    exit 0
+fi
+
+# Some runners do not expose a controlling tty; stdout is their only terminal
+# path, so retain a harmless fallback.
+emit
