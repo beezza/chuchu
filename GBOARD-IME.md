@@ -46,6 +46,66 @@ readings are still sent to the remote terminal and replaced with Backspace when
 the IME changes candidates. This is not a commit-only input mode, and terminal
 applications that react immediately to each character need device testing.
 
+## Pi/Codex agent-turn notifications
+
+An interactive coding agent usually keeps its process (and the shell) alive
+after one prompt finishes, so the shell `postexec` hook cannot see that boundary.
+Chuchu also recognizes the agent completion events and feeds them through the
+same Android notification path as a long-running shell command. The existing
+five-second minimum and background/other-tab gating still apply.
+
+### Codex
+
+For a tmux session, the most reliable setup is the small callback in
+`contrib/chuchu-agent-notify`. Install it on the machine where Codex runs and
+make it executable:
+
+```sh
+install -Dm755 contrib/chuchu-agent-notify ~/.local/bin/chuchu-agent-notify
+```
+
+Then merge this key into the user-level `~/.codex/config.toml` (do not add a
+second `notify` key):
+
+```toml
+notify = ["/home/you/.local/bin/chuchu-agent-notify"]
+```
+
+Codex passes a JSON notification payload to that command. The callback emits a
+Chuchu-specific OSC 9 event, wrapping it for tmux and enabling the current
+pane's `allow-passthrough` option. Restart Codex after changing the config.
+
+If Codex is not running through tmux, its built-in OSC 9 notifications can be
+used instead:
+
+```toml
+[tui]
+notifications = ["agent-turn-complete"]
+notification_method = "osc9"
+notification_condition = "always"
+```
+
+Use either the callback or the built-in notification, not both, or one turn can
+produce two notifications. These are the corresponding Codex settings in the
+[configuration reference](https://developers.openai.com/codex/config-reference/).
+
+### Pi coding agent
+
+Copy `contrib/pi-chuchu-notify.ts` to Pi's global extension directory:
+
+```sh
+mkdir -p ~/.pi/agent/extensions
+cp contrib/pi-chuchu-notify.ts ~/.pi/agent/extensions/chuchu-notify.ts
+```
+
+The extension listens for Pi's `agent_settled` event (the point at which no
+retry, compaction, or follow-up remains) and emits the same tmux-safe Chuchu
+event. Restart Pi, or use `/reload` after copying it. Pi documents this global
+extension location and lifecycle event in its [extensions guide](https://pi.dev/docs/latest/extensions).
+
+If `pi-notify` is already installed, no extra extension is needed: Chuchu also
+recognizes its `Pi: Ready for input`/`Ready for input` OSC 9 messages.
+
 ## Build and install
 
 On the fork, enable GitHub Actions if GitHub has disabled inherited workflows.
