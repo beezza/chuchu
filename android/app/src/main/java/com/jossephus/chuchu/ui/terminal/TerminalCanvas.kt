@@ -73,6 +73,10 @@ fun TerminalCanvas(
     onPrimaryClick: (x: Float, y: Float) -> Unit = { _, _ -> },
     onAppSelectionDrag: (action: Int, x: Float, y: Float) -> Unit = { _, _, _ -> },
     onScroll: (delta: Int, x: Float, y: Float) -> Unit = { _, _, _ -> },
+    // tmux consumes the same drag-reporting mouse modes as full-screen TUIs.
+    // When the active tab is a tmux session, keep long-press drags for the
+    // host-side selection even while the terminal is in the alternate screen.
+    preferClientSelection: Boolean = false,
     minFontSizeSp: Float = 1f,
     maxFontSizeSp: Float = Float.MAX_VALUE,
     onFontSizeChange: (sizeSp: Float) -> Unit = {},
@@ -202,6 +206,7 @@ fun TerminalCanvas(
     val currentOnPrimaryClick = rememberUpdatedState(onPrimaryClick)
     val currentOnAppSelectionDrag = rememberUpdatedState(onAppSelectionDrag)
     val currentOnScroll = rememberUpdatedState(onScroll)
+    val currentPreferClientSelection = rememberUpdatedState(preferClientSelection)
     val currentOnFontSizeChange = rememberUpdatedState(onFontSizeChange)
     val currentFontSizeSp = rememberUpdatedState(fontSizeSp)
     val currentMinFontSizeSp = rememberUpdatedState(minFontSizeSp)
@@ -343,7 +348,7 @@ fun TerminalCanvas(
                                     if (dragMode == DragMode.None) {
                                         val s = currentSnapshot.value
                                         val downPos = toSnapshotSpace(down.position, s)
-                                        if (s.appHandlesSelectionDrag) {
+                                        if (s.appHandlesSelectionDrag && !currentPreferClientSelection.value) {
                                             currentOnAppSelectionDrag.value(TerminalMouseAction.Press, downPos.x, downPos.y)
                                             currentHaptics.value.performHapticFeedback(
                                                 HapticFeedbackType.LongPress,
