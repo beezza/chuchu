@@ -157,7 +157,7 @@ class TerminalInputView(context: Context) : EditText(context) {
             "onKeyDown keyCode=$keyCode unicode=${event.unicodeChar} meta=${event.metaState} flags=${event.flags}",
         )
         val ghosttyAction = GhosttyKeyAction.fromAndroid(event.action, event.repeatCount)
-        val mapped = KeyMapper.map(keyCode, event.unicodeChar, event.metaState)
+        val mapped = KeyMapper.map(keyCode, event.unicodeChar, event.metaState, event.getUnicodeChar(0))
         if (mapped != null && ghosttyAction != null) {
             clearSuppression("onKeyDown keyCode=$keyCode")
             if (ghosttyAction == GhosttyKeyAction.Press && shouldInvalidateImeMirrorForKey(keyCode)) {
@@ -180,7 +180,7 @@ class TerminalInputView(context: Context) : EditText(context) {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         logInput("onKeyUp keyCode=$keyCode flags=${event.flags}")
         val ghosttyAction = GhosttyKeyAction.fromAndroid(event.action, event.repeatCount)
-        val mapped = KeyMapper.map(keyCode, event.unicodeChar, event.metaState)
+        val mapped = KeyMapper.map(keyCode, event.unicodeChar, event.metaState, event.getUnicodeChar(0))
         if (mapped != null && ghosttyAction != null) {
             onTerminalKey?.invoke(mapped.key, mapped.codepoint, mapped.mods, ghosttyAction, mapped.charCode)
             return true
@@ -502,7 +502,7 @@ class TerminalInputView(context: Context) : EditText(context) {
             )
             val ghosttyAction = GhosttyKeyAction.fromAndroid(event.action, event.repeatCount)
             if (ghosttyAction != null) {
-                val mapped = KeyMapper.map(event.keyCode, event.unicodeChar, event.metaState)
+                val mapped = KeyMapper.map(event.keyCode, event.unicodeChar, event.metaState, event.getUnicodeChar(0))
                 if (mapped != null) {
                     if (ghosttyAction == GhosttyKeyAction.Press && view.shouldInvalidateImeMirrorForKey(event.keyCode)) {
                         invalidateImeMirror(
