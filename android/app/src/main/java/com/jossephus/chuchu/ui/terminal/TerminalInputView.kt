@@ -213,7 +213,7 @@ class TerminalInputView(context: Context) : EditText(context) {
 
         private var batchEditDepth = 0
         private var outerBatchBeforeText: String? = null
-        private var outerBatchHadDirectEmission = false
+        private var outerBatchHadHandledMutation = false
         private var directMutationDepth = 0
         private var imeSelectionUpdatePending = false
 
@@ -234,10 +234,7 @@ class TerminalInputView(context: Context) : EditText(context) {
         }
 
         private fun clearImeBuffer() {
-            val editable = getEditable()
-            BaseInputConnection.removeComposingSpans(editable)
-            if (editable.isNotEmpty()) editable.clear()
-            Selection.setSelection(editable, 0)
+            clearMirrorSilently()
             logConn("clearImeBuffer")
             // Enter, navigation and accessory keys only reset our mirror.
             // Restarting the editor also resets some IMEs' selected input mode.
@@ -336,7 +333,7 @@ class TerminalInputView(context: Context) : EditText(context) {
             )
 
             if (before != after) {
-                outerBatchHadDirectEmission = true
+                outerBatchHadHandledMutation = true
             }
 
             reconcileAndEmitMutation(source, before, after)
@@ -356,7 +353,13 @@ class TerminalInputView(context: Context) : EditText(context) {
         private fun clearMirrorSilently() {
             val editable = getEditable()
             BaseInputConnection.removeComposingSpans(editable)
-            if (editable.isNotEmpty()) editable.clear()
+            if (editable.isNotEmpty()) {
+                // This is local bookkeeping, not a user deletion. In particular,
+                // an unchanged candidate commit or finishComposingText emits no
+                // diff, so the outer batch must not replay this clear as deletes.
+                outerBatchHadHandledMutation = true
+                editable.clear()
+            }
             Selection.setSelection(editable, 0)
             logConn("clearMirrorSilently")
         }
@@ -456,7 +459,7 @@ class TerminalInputView(context: Context) : EditText(context) {
         override fun beginBatchEdit(): Boolean {
             if (batchEditDepth == 0) {
                 outerBatchBeforeText = getEditable().toString()
-                outerBatchHadDirectEmission = false
+                outerBatchHadHandledMutation = false
             }
             batchEditDepth += 1
             logConn("beginBatchEdit depth=$batchEditDepth")
@@ -475,17 +478,17 @@ class TerminalInputView(context: Context) : EditText(context) {
             if (batchEditDepth == 0) {
                 val batchBefore = outerBatchBeforeText
                 outerBatchBeforeText = null
-                val hadDirectEmission = outerBatchHadDirectEmission
-                outerBatchHadDirectEmission = false
+                val hadHandledMutation = outerBatchHadHandledMutation
+                outerBatchHadHandledMutation = false
 
                 if (directMutationDepth > 0 && batchBefore != editableAfter) {
                     // This outer batch is closing inside a direct mutation callback
                     // (commitText/setComposingText/delete). That callback will emit
                     // the diff once it regains control after super.* returns.
-                    outerBatchHadDirectEmission = true
+                    outerBatchHadHandledMutation = true
                 }
 
-                if (batchBefore != null && batchBefore != editableAfter && !hadDirectEmission && directMutationDepth == 0) {
+                if (batchBefore != null && batchBefore != editableAfter && !hadHandledMutation && directMutationDepth == 0) {
                     logConn(
                         "endBatchEdit reconcile before=${view.describeText(batchBefore)} after=${view.describeText(editableAfter)}",
                     )
