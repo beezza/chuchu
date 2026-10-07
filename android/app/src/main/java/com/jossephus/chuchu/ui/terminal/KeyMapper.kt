@@ -3,7 +3,7 @@ package com.jossephus.chuchu.ui.terminal
 import android.view.KeyEvent
 
 object KeyMapper {
-    fun map(keyCode: Int, codepoint: Int, metaState: Int): MappedKey? {
+    fun map(keyCode: Int, codepoint: Int, metaState: Int, layoutCodepoint: Int = 0): MappedKey? {
         val mods = translateMods(metaState)
         val mapped = when (keyCode) {
             // Navigation and editing keys
@@ -98,8 +98,18 @@ object KeyMapper {
             }
         }
 
-        if (mapped.codepoint != 0) return mapped.copy(charCode = codepoint)
-        val unshiftedCodepoint = unshiftedCodepointFor(keyCode)
+        if (mapped.codepoint != 0) {
+            return mapped.copy(
+                codepoint = if (layoutCodepoint > 0) layoutCodepoint else mapped.codepoint,
+                charCode = codepoint,
+            )
+        }
+        // Android resolves the active hardware layout, including JIS layouts.
+        // The US table is only a fallback when no layout character is available.
+        // Functional keys must retain codepoint=0 even if Android reports CR/TAB.
+        val fallbackCodepoint = unshiftedCodepointFor(keyCode)
+        val unshiftedCodepoint =
+            if (fallbackCodepoint != 0 && layoutCodepoint > 0) layoutCodepoint else fallbackCodepoint
         return if (unshiftedCodepoint != 0) {
             mapped.copy(codepoint = unshiftedCodepoint, charCode = codepoint)
         } else {
