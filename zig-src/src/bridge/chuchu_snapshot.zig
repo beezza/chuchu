@@ -661,7 +661,7 @@ export fn Java_com_jossephus_chuchu_service_terminal_GhosttyBridge_nativeSetMous
     chuchu_set_mouse_encoding_size(handle, screen_width, screen_height, cell_width, cell_height, padding_top, padding_bottom, padding_left, padding_right);
 }
 
-export fn Java_com_jossephus_chuchu_service_terminal_GhosttyBridge_nativeEncodeKey(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, key: c.jint, codepoint: c.jint, mods: c.jint, action: c.jint, utf8_jstring: c.jstring) callconv(.c) c.jbyteArray {
+export fn Java_com_jossephus_chuchu_service_terminal_GhosttyBridge_nativeEncodeKey(env: *c.JNIEnv, thiz: c.jobject, handle: c.jlong, key: c.jint, codepoint: c.jint, mods: c.jint, action: c.jint, utf8_jstring: c.jstring, consumed_mods: c.jint) callconv(.c) c.jbyteArray {
     _ = thiz;
     const terminal = chuchuFromHandle(handle) orelse return jniEmptyByteArray(env);
     const action_value: ghostty.input.KeyAction = std.meta.intToEnum(ghostty.input.KeyAction, action) catch return jniEmptyByteArray(env);
@@ -688,6 +688,9 @@ export fn Java_com_jossephus_chuchu_service_terminal_GhosttyBridge_nativeEncodeK
         .action = action_value,
         .key = key_value,
         .mods = @bitCast(@as(ghostty.input.KeyMods.Backing, @intCast(mods))),
+        // Text-producing Shift must not force printable characters into CSI u
+        // when applications such as Neovim enable Kitty keyboard mode.
+        .consumed_mods = @bitCast(@as(ghostty.input.KeyMods.Backing, @intCast(consumed_mods))),
         .unshifted_codepoint = if (codepoint > 0) @intCast(codepoint) else 0,
         .utf8 = utf8_slice,
     };
