@@ -356,8 +356,15 @@ class TerminalSessionRepository private constructor(application: Application) {
         activeEngine()?.scrollToActive()
     }
 
-    fun writeKey(key: Int, codepoint: Int, mods: Int, action: Int, utf8: String? = null) {
-        activeEngine()?.writeKey(key, codepoint, mods, action, utf8)
+    fun writeKey(
+        key: Int,
+        codepoint: Int,
+        mods: Int,
+        action: Int,
+        utf8: String? = null,
+        consumedMods: Int = 0,
+    ) {
+        activeEngine()?.writeKey(key, codepoint, mods, action, utf8, consumedMods)
     }
 
     fun writeText(text: String) {
