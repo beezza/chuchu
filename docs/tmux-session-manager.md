@@ -14,6 +14,8 @@ Search is local and case insensitive. Refresh is explicit; the manager does not 
 
 All management commands use `TerminalSessionRepository.withTmuxService` → `withPreflightEngine` → an independent SSH exec connection on an engine dispatcher. No commands are sent through the terminal input stream. The native reader merges SSH stdout and stderr; the shell envelope captures combined diagnostics with the actual exit status. Command reading has a 20-second deadline and 1 MiB maximum; a management operation has a 30-second coroutine deadline, including waiting for the shared preflight mutex. Host-key prompts participate in cancellation. Native connection establishment has its existing native socket timeout and cannot be interrupted during a single JNI call.
 
+`MultiplexerShell` explicitly starts `/bin/sh` for management commands and multiplexer PTY startup. SSH otherwise passes the command to the account's shell: fish cannot parse the POSIX command envelope, causing preview.1 to report installed tmux as missing. The outer argument quoting preserves both apostrophes and backslashes across fish, bash, zsh and sh; POSIX-only quoting is insufficient because [fish processes backslash escapes within single quotes](https://fishshell.com/docs/current/language.html#quotes). Only an empty `command -v` failure is treated as missing; shell/exec/protocol failures remain diagnostic errors. The account's exported SSH PATH is inherited, and a genuine lookup failure explicitly mentions that PATH. Terminal input and the user's interactive shell configuration remain unchanged.
+
 Targets include session ID, creation time, server PID and server start time. `if-shell -F` checks this identity and queues the action in the same tmux server. This rejects IDs reused after server restart. Connecting reuses ChuChu's reconnect path with an identity-guarded existing-session PTY attachment, without `new-session -A`. Metadata updates apply only to tabs on the same endpoint. Duplication clears the old identity before allocating a fresh session.
 
 `TmuxManagerController` serializes operations, binds results to a tab and endpoint, and rejects canceled or stale results. A host/tab change dismisses the old panel. The ViewModel holds state across configuration changes; dialog input uses Compose saveable state, while preview content stays only in memory. Session count, remote client count and ChuChu tab count are distinct. The current indicator tracks the session attached through ChuChu; switching the tmux client externally with tmux key bindings is not currently detected.
@@ -34,15 +36,19 @@ cd android
 
 `TmuxSessionServiceTest` covers framing, metadata, shell quoting, duplicates, creation, rename, termination, stale identities, command failures, search and preview bounds. `TmuxManagerControllerTest` covers confirmation cancellation, duplicate submission, host/tab changes, stale responses, errors and preview throttling. `TmuxIntegrationTest` uses a temporary socket/configuration, including a PTY client, and cleans up only its own server. It skips explicitly if local tmux is unavailable. `TmuxSessionManagerUiTest` exercises the native sheet at 320/360 × 640 dp with Robolectric. Form tests use 320 dp to avoid [Robolectric issue #8460](https://github.com/robolectric/robolectric/issues/8460), which loops when text fields are shown in floating dialogs with wider size qualifiers. Real device validation is still required for Android Back/rotation, keyboard visibility, light/dark themes and actual SSH/Tailscale connectivity.
 
+Shell regressions execute the production SSH envelope under installed fish/bash/zsh/sh binaries, including literal backslashes, quotes, Unicode, newlines and injection attempts. The private tmux integration suite also exercises creation, rename, preview, termination and real PTY attachment with fish as the SSH command interpreter. Missing optional shells are explicitly skipped.
+
 ## Files changed
 
 - UI: `TmuxSessionManager.kt`, `TmuxManagerController.kt`, `TerminalScreen.kt`, `TerminalViewModel.kt`.
-- Multiplexer: `MultiplexerModels.kt`, `TmuxMultiplexer.kt`, `TmuxCommands.kt`, `TmuxSessionService.kt`.
+- Multiplexer: `MultiplexerModels.kt`, `MultiplexerShell.kt`, `TmuxMultiplexer.kt`, `TmuxCommands.kt`, `TmuxSessionService.kt`.
 - Connection/tab integration: `TabSpec.kt`, `TerminalSessionRepository.kt`, `TerminalSessionEngine.kt`.
 - Build/test setup: `android/app/build.gradle.kts` (Material3, Compose test dependency, test heap).
-- Tests: `TmuxMultiplexerTest.kt`, `TmuxSessionServiceTest.kt`, `TmuxIntegrationTest.kt`, `TmuxManagerControllerTest.kt`, `TmuxSessionManagerUiTest.kt`.
+- Tests: `MultiplexerShellTest.kt`, `TmuxMultiplexerTest.kt`, `TmuxSessionServiceTest.kt`, `TmuxIntegrationTest.kt`, `TmuxManagerControllerTest.kt`, `TmuxSessionManagerUiTest.kt`.
 - Documentation/progress: this document and `.plans/progress.txt` (the plans directory is ignored by repository policy).
 
 ## Workspace validation result (2026-10-11)
 
 Native `make build`, `testDebugUnitTest`, `assembleDebug` and `lintDebug` succeeded using the JDK17/Android SDK/NDK/Zig toolchain staged in `/tmp/chuchu-toolchain`. Tests: **158 passed, 5 existing backup skips, 0 failures/errors** (163 total), including five isolated tmux tests and three Compose UI tests. Lint completed with 80 warnings and three hints, no errors. APK signature and all four JNI library entries were verified. No Android device was connected; actual Android-to-SSH execution and device Back/rotation/keyboard/theme behavior remain unverified. Terminal input, key mapping, terminal canvas and native Ghostty input files were not modified.
+
+The fish hotfix in preview.2 adds eight regressions. Full `testDebugUnitTest`, `assembleDebug` and `lintDebug` validation succeeded: **166 passed, 5 existing backup skips, 0 failures/errors** (171 total), including six private-socket tmux integration tests and the four real-shell round-trip tests. The fish integration test includes PTY attachment and termination without recreating the session. Android device validation remains outstanding.

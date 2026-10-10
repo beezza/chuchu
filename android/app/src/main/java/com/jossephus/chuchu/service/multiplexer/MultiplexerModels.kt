@@ -35,6 +35,19 @@ sealed interface MultiplexerAvailability {
     data class UnsupportedMultiplexer(val multiplexer: MultiplexerType) : MultiplexerAvailability
     data class UnsupportedTransport(val transport: Transport) : MultiplexerAvailability
     data class Error(val message: String, val output: String = "") : MultiplexerAvailability
+
+    companion object {
+        fun fromResult(type: MultiplexerType, result: MultiplexerCommandResult): MultiplexerAvailability {
+            if (result.isSuccess) return Available
+            // command -v returns 1 with no output when the executable is absent.
+            // Shell syntax errors, unsupported exec and missing envelopes are not absence.
+            if (result.exitCode == 1 && result.output.isBlank()) return Missing(type)
+            val detail = result.output.take(1_024).ifBlank {
+                "remote command exited with status ${result.exitCode}"
+            }
+            return Error(message = "Could not check ${type.label}: $detail")
+        }
+    }
 }
 
 data class MultiplexerCommandResult(

@@ -44,8 +44,10 @@ class TmuxIntegrationTest {
         directory.deleteRecursively()
     }
 
-    private fun execute(command: String): MultiplexerCommandResult {
-        val builder = ProcessBuilder("sh", "-c", command).redirectErrorStream(true)
+    private fun execute(command: String, loginShell: String = "sh"): MultiplexerCommandResult {
+        val builder =
+            ProcessBuilder(loginShell, "-c", MultiplexerShell.execCommand(command))
+                .redirectErrorStream(true)
         builder.environment()["PATH"] = wrapperDir.path + ":" + System.getenv("PATH")
         builder.environment().remove("TMUX")
         builder.environment().remove("TMUX_PANE")
@@ -55,11 +57,7 @@ class TmuxIntegrationTest {
             process.destroyForcibly()
             "Isolated tmux test timed out"
         }
-        return MultiplexerCommandResult(
-            process.exitValue(),
-            if (process.exitValue() == 0) output else "",
-            if (process.exitValue() == 0) "" else output,
-        )
+        return MultiplexerShell.parseResult(output)
     }
 
     @Test
@@ -135,14 +133,47 @@ class TmuxIntegrationTest {
 
     @Test
     fun guardedAttachmentUsesExistingSessionAndTerminationDoesNotRecreateIt() = runBlocking {
+        attachAndTerminate("sh")
+    }
+
+    @Test
+    fun fishLoginShellSupportsManagementAndPtyAttachment() = runBlocking {
+        val probe = ProcessBuilder("sh", "-c", "command -v fish").start()
+        assumeTrue("fish is required for the SSH shell regression test", probe.waitFor() == 0)
+        service = TmuxSessionService { execute(it, "fish") }
+        assertTrue(execute(TmuxMultiplexer.availabilityCommand(), "fish").isSuccess)
+        val name = "fish's | session"
+        val path = File(directory, "fish's \\\\ project").apply { mkdir() }
+        val session = service.create(name, path.path, emptyList())
+        assertEquals(name, session.name)
+        assertEquals(path.path, session.workingDirectory)
+        val identity = requireNotNull(session.identity)
+        service.rename(identity, "renamed ' ; literal session")
+        service.verify(identity)
+        assertEquals("renamed ' ; literal session", service.list().single().name)
+        service.preview(identity)
+        service.terminate(identity)
+        attachAndTerminate("fish")
+    }
+
+    private suspend fun attachAndTerminate(loginShell: String) {
         val probe = ProcessBuilder("sh", "-c", "command -v script").start()
         assumeTrue(probe.waitFor() == 0)
         val session = service.create("attach-test", "", emptyList())
         val identity = requireNotNull(session.identity)
+        val command = MultiplexerShell.command(TmuxCommands.attach(identity))
         val builder =
-            ProcessBuilder("script", "-q", "-e", "-c", TmuxCommands.attach(identity), "/dev/null")
+            ProcessBuilder(
+                    "script",
+                    "-q",
+                    "-e",
+                    "-c",
+                    "$loginShell -c ${TmuxCommands.quote(command)}",
+                    "/dev/null",
+                )
                 .redirectErrorStream(true)
         builder.environment()["PATH"] = wrapperDir.path + ":" + System.getenv("PATH")
+        builder.environment()["SHELL"] = "/bin/sh"
         builder.environment()["TERM"] = "xterm-256color"
         builder.environment().remove("TMUX")
         val client = builder.start()
@@ -158,7 +189,7 @@ class TmuxIntegrationTest {
             service.terminate(identity)
             assertTrue(client.waitFor(5, TimeUnit.SECONDS))
             assertTrue(service.list().isEmpty())
-            assertFalse(execute(TmuxCommands.attach(identity)).isSuccess)
+            assertFalse(execute(TmuxCommands.attach(identity), loginShell).isSuccess)
             assertTrue(service.list().isEmpty())
         } finally {
             client.destroyForcibly()

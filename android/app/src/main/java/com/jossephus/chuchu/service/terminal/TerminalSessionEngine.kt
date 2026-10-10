@@ -14,6 +14,7 @@ import com.jossephus.chuchu.service.multiplexer.MultiplexerAvailability
 import com.jossephus.chuchu.service.multiplexer.MultiplexerCommandResult
 import com.jossephus.chuchu.service.multiplexer.MultiplexerRegistry
 import com.jossephus.chuchu.service.multiplexer.MultiplexerSessionAllocator
+import com.jossephus.chuchu.service.multiplexer.MultiplexerShell
 import com.jossephus.chuchu.service.multiplexer.RemoteMultiplexerSession
 import com.jossephus.chuchu.service.multiplexer.TmuxCommands
 import com.jossephus.chuchu.service.multiplexer.TmuxSessionIdentity
@@ -515,11 +516,7 @@ class TerminalSessionEngine(
         }
         return runCatching {
             val result = runMultiplexerCommand(params, multiplexer.availabilityCommand())
-            if (result.isSuccess) {
-                MultiplexerAvailability.Available
-            } else {
-                MultiplexerAvailability.Missing(type)
-            }
+            MultiplexerAvailability.fromResult(type, result)
         }.getOrElse { error ->
             MultiplexerAvailability.Error(
                 message = error.message ?: "Could not check ${type.label} on this host",
@@ -533,7 +530,7 @@ class TerminalSessionEngine(
     ): String? = when (availability) {
         MultiplexerAvailability.Available -> null
         is MultiplexerAvailability.Missing ->
-            "${availability.multiplexer.label} executable was not found on the remote host"
+            "${availability.multiplexer.label} executable was not found in the remote SSH command PATH"
         is MultiplexerAvailability.UnsupportedMultiplexer ->
             "${availability.multiplexer.label} is not supported yet"
         is MultiplexerAvailability.UnsupportedTransport ->
@@ -612,7 +609,7 @@ class TerminalSessionEngine(
         when (val availability = checkMultiplexerAvailability(spec.copy(multiplexer = type))) {
             MultiplexerAvailability.Available -> Unit
             is MultiplexerAvailability.Missing -> throw IllegalStateException(
-                "${availability.multiplexer.label} executable was not found on the remote host",
+                "${availability.multiplexer.label} executable was not found in the remote SSH command PATH",
             )
             is MultiplexerAvailability.UnsupportedMultiplexer -> throw IllegalStateException(
                 "${availability.multiplexer.label} is not supported yet",
@@ -935,7 +932,9 @@ class TerminalSessionEngine(
         )
         val startupCommand = params.multiplexerStartupCommand()?.trim().orEmpty()
         if (startupCommand.isNotEmpty()) {
-            nativeSsh.openExecPty(startupCommand, cols, rows, ptyWidthPx(), ptyHeightPx())
+            nativeSsh.openExecPty(
+                MultiplexerShell.command(startupCommand), cols, rows, ptyWidthPx(), ptyHeightPx(),
+            )
         } else {
             nativeSsh.openShell(cols, rows, ptyWidthPx(), ptyHeightPx())
         }
@@ -1083,15 +1082,12 @@ class TerminalSessionEngine(
                 keyPassphrase = params.keyPassphrase,
             )
             cancellationJob?.ensureActive()
-            if (!service.openExec(withExitEnvelope(command))) {
+            if (!service.openExec(MultiplexerShell.execCommand(command))) {
                 return MultiplexerCommandResult(1, "", "Remote server did not open an exec channel")
             }
             return readExecOutput(service, timeoutMs, cancellationJob)
         }
     }
-
-    private fun withExitEnvelope(command: String): String =
-        "( $command\n) 2>&1; printf '\nCHUCHU_EXIT:%s\n' \"\$?\""
 
     private fun readExecOutput(
         service: NativeSshService,
@@ -1107,26 +1103,12 @@ class TerminalSessionEngine(
                 output.write(chunk)
                 if (output.size() > 1_048_576) return MultiplexerCommandResult(125, "", "Command output exceeded 1 MiB")
             } else if (service.isChannelEof()) {
-                return parseCommandEnvelope(output.toString("UTF-8"))
+                return MultiplexerShell.parseResult(output.toString("UTF-8"))
             } else {
                 Thread.sleep(25)
             }
         }
         return MultiplexerCommandResult(124, "", "Command timed out")
-    }
-
-    private fun parseCommandEnvelope(output: String): MultiplexerCommandResult {
-        val marker = Regex("(?:^|\\n)CHUCHU_EXIT:(\\d+)\\s*$").find(output)
-            ?: return MultiplexerCommandResult(
-                exitCode = 125,
-                stdout = output,
-                stderr = "Missing command exit marker",
-            )
-        val exitCode = marker.groupValues.getOrNull(1)?.toIntOrNull() ?: 125
-        val cleanOutput = output.substring(0, marker.range.first)
-        // The native reader merges SSH stdout and stderr; nonzero output is diagnostic text.
-        return if (exitCode == 0) MultiplexerCommandResult(exitCode, cleanOutput, "")
-        else MultiplexerCommandResult(exitCode, "", cleanOutput)
     }
 
     private fun scheduleReconnect(reason: String) {
