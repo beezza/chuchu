@@ -7,6 +7,9 @@ import com.jossephus.chuchu.model.MultiplexerType
 import com.jossephus.chuchu.model.Transport
 import com.jossephus.chuchu.service.multiplexer.MultiplexerRegistry
 import com.jossephus.chuchu.service.multiplexer.RemoteMultiplexerSession
+import com.jossephus.chuchu.service.multiplexer.TmuxSessionService
+import com.jossephus.chuchu.service.multiplexer.TmuxSessionIdentity
+import kotlinx.coroutines.withTimeout
 import com.jossephus.chuchu.service.ssh.HostKeyStore
 import com.jossephus.chuchu.service.ssh.TailscaleStatusChecker
 import java.util.UUID
@@ -187,6 +190,105 @@ class TerminalSessionRepository private constructor(application: Application) {
     suspend fun listMultiplexerSessions(spec: TabSpec): List<RemoteMultiplexerSession> =
         withPreflightEngine { engine -> engine.listMultiplexerSessions(spec) }
 
+    suspend fun <T> withTmuxService(
+        tabId: String,
+        spec: TabSpec,
+        block: suspend (TmuxSessionService) -> T,
+    ): T =
+        withTimeout(30_000) {
+            withPreflightEngine { engine ->
+                block(
+                    TmuxSessionService { command ->
+                        check(
+                            _activeTabId.value == tabId &&
+                                _tabs.value.any { it.id == tabId && it.spec.sameEndpoint(spec) }
+                        ) {
+                            "Active connection changed. Reopen tmux sessions."
+                        }
+                        engine.executeTmuxCommand(spec, command)
+                    }
+                )
+            }
+        }
+
+    fun recordTmuxSessions(spec: TabSpec, sessions: List<RemoteMultiplexerSession>) {
+        _tabs.value
+            .filter { it.spec.sameEndpoint(spec) }
+            .forEach { tab ->
+                val session = sessions.firstOrNull {
+                    if (tab.spec.tmuxSessionIdentity != null)
+                        it.identity == tab.spec.tmuxSessionIdentity
+                    else it.name == tab.spec.multiplexerSessionName
+                }
+                if (session != null) {
+                    tab.spec =
+                        tab.spec.copy(
+                            multiplexerSessionName = session.name,
+                            tmuxSessionIdentity = session.identity,
+                            multiplexerCreateIfMissing = false,
+                        )
+                    session.identity?.let { tab.engine.trackTmuxSession(it, session.name) }
+                }
+            }
+    }
+
+    fun updateTmuxSession(
+        spec: TabSpec,
+        identity: TmuxSessionIdentity,
+        name: String? = null,
+        terminated: Boolean = false,
+    ) {
+        _tabs.value
+            .filter {
+                it.spec.sameEndpoint(spec) &&
+                    it.spec.multiplexer == MultiplexerType.Tmux &&
+                    (it.spec.tmuxSessionIdentity == identity ||
+                        (it.spec.tmuxSessionIdentity == null &&
+                            it.spec.multiplexerSessionName == name))
+            }
+            .forEach { tab ->
+                if (terminated) {
+                    // Stop recovery so a killed session is never automatically recreated. Keep the
+                    // tab
+                    // available for the manager to choose another session or for explicit Close.
+                    tab.spec =
+                        tab.spec.copy(
+                            multiplexerCreateIfMissing = false,
+                            tmuxSessionIdentity = identity,
+                        )
+                    tab.engine.disconnect()
+                } else if (name != null) {
+                    tab.spec =
+                        tab.spec.copy(
+                            multiplexerSessionName = name,
+                            tmuxSessionIdentity = identity,
+                            multiplexerCreateIfMissing = false,
+                        )
+                    tab.engine.trackTmuxSession(identity, name)
+                }
+            }
+    }
+
+    suspend fun switchTmuxSession(
+        tabId: String,
+        spec: TabSpec,
+        session: RemoteMultiplexerSession,
+    ): TabSession {
+        check(_activeTabId.value == tabId) { "Active tab changed" }
+        val tab = _tabs.value.first { it.id == tabId && it.spec.sameEndpoint(spec) }
+        tab.spec =
+            tab.spec.copy(
+                multiplexerSessionName = session.name,
+                tmuxSessionIdentity = session.identity,
+                multiplexerCreateIfMissing = false,
+            )
+        withTimeout(30_000) { reconnectTab(tab).join() }
+        check(tab.sessionState.value.status == SessionStatus.Connected) {
+            tab.sessionState.value.error ?: "Could not connect to tmux session"
+        }
+        return tab
+    }
+
     private suspend fun <T> withPreflightEngine(block: suspend (TerminalSessionEngine) -> T): T =
         preflightMutex.withLock {
             val engine =
@@ -247,6 +349,7 @@ class TerminalSessionRepository private constructor(application: Application) {
             multiplexer = spec.multiplexer,
             multiplexerSessionName = spec.multiplexerSessionName,
             multiplexerCreateIfMissing = spec.multiplexerCreateIfMissing,
+            tmuxSessionIdentity = spec.tmuxSessionIdentity,
         )
         return tab
     }
@@ -287,9 +390,9 @@ class TerminalSessionRepository private constructor(application: Application) {
         return true
     }
 
-    fun reconnectTab(tab: TabSession) {
+    fun reconnectTab(tab: TabSession): Job {
         val spec = tab.spec
-        tab.engine.connect(
+        return tab.engine.connect(
             host = spec.host,
             port = spec.port,
             username = spec.username,
@@ -304,6 +407,7 @@ class TerminalSessionRepository private constructor(application: Application) {
             multiplexer = spec.multiplexer,
             multiplexerSessionName = spec.multiplexerSessionName,
             multiplexerCreateIfMissing = spec.multiplexerCreateIfMissing,
+            tmuxSessionIdentity = spec.tmuxSessionIdentity,
         )
     }
 

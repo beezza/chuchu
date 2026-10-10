@@ -4,6 +4,7 @@ import com.jossephus.chuchu.model.AuthMethod
 import com.jossephus.chuchu.model.HostProfile
 import com.jossephus.chuchu.model.MultiplexerType
 import com.jossephus.chuchu.model.Transport
+import com.jossephus.chuchu.service.multiplexer.TmuxSessionIdentity
 
 data class TabSpec(
     val hostId: Long? = null,
@@ -21,6 +22,7 @@ data class TabSpec(
     val multiplexer: MultiplexerType? = null,
     val multiplexerSessionName: String? = null,
     val multiplexerCreateIfMissing: Boolean = true,
+    val tmuxSessionIdentity: TmuxSessionIdentity? = null,
 ) {
     val sessionKey: String
         get() =
@@ -78,3 +80,8 @@ data class TabSpec(
         )
     }
 }
+
+/** Profile IDs alone cannot distinguish edited endpoints or ad-hoc hosts with null IDs. */
+fun TabSpec.sameEndpoint(other: TabSpec): Boolean =
+    hostId == other.hostId && host == other.host && port == other.port && username == other.username &&
+        transport == other.transport && multiplexer == other.multiplexer

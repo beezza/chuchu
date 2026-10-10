@@ -78,6 +78,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jossephus.chuchu.data.repository.SettingsRepository
 import com.jossephus.chuchu.model.AuthMethod
 import com.jossephus.chuchu.model.Transport
+import com.jossephus.chuchu.model.MultiplexerType
 import com.jossephus.chuchu.service.terminal.SessionStatus
 import com.jossephus.chuchu.service.terminal.TabSpec
 import com.jossephus.chuchu.ui.components.ChuButton
@@ -423,6 +424,7 @@ fun TerminalScreen(
             )
         }
     val multiplexerState by vm.multiplexerState.collectAsStateWithLifecycle()
+    val tmuxManagerState by vm.tmuxManager.state.collectAsStateWithLifecycle()
 
     LaunchedEffect(terminalFontSizeSp) {
         settingsRepo.setTerminalFontSize(terminalFontSizeSp)
@@ -698,6 +700,7 @@ fun TerminalScreen(
                         onAddTab = openAnotherSessionForCurrentHost,
                         onOpenManager = { showGlobalTabManager = true },
                     )
+                    TmuxManagerEntry(activeTab?.spec, vm.tmuxManager::open)
                     Box(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         contentAlignment = Alignment.Center,
@@ -747,6 +750,7 @@ fun TerminalScreen(
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
+                    TmuxManagerEntry(activeTab?.spec, vm.tmuxManager::open)
                     val errorMessage = preflightError ?: sessionState.error
                     if (errorMessage != null) {
                         TerminalRecoveryActions(
@@ -1102,6 +1106,8 @@ fun TerminalScreen(
                                 },
                             )
                         }
+
+                        TmuxManagerEntry(activeTab?.spec, vm.tmuxManager::open)
 
                         // Empty state in strip mode when all tabs are closed
                         if (tabMode == TerminalTabMode.Strip && tabs.isEmpty()) {
@@ -1812,6 +1818,10 @@ fun TerminalScreen(
         }
     }
 
+    if (tmuxManagerState.sourceTabId == activeTabId) {
+        TmuxSessionManager(tmuxManagerState, vm.tmuxManager)
+    }
+
     BackHandler(enabled = showGlobalTabManager) { showGlobalTabManager = false }
 
     // Strip mode overlays — hoisted outside the when block so they are
@@ -1972,6 +1982,18 @@ private fun UploadProgressDialog(progress: UploadProgress) {
                 style = typography.labelSmall,
                 color = colors.textMuted,
             )
+        }
+    }
+}
+
+@Composable
+private fun TmuxManagerEntry(spec: TabSpec?, onOpen: () -> Unit) {
+    if (spec?.multiplexer != MultiplexerType.Tmux || !spec.usesRuntimeMultiplexer) return
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.End) {
+        ChuButton(onClick = onOpen, variant = ChuButtonVariant.Ghost, bracketed = true,
+            contentDescription = "Open tmux session manager",
+            modifier = Modifier.defaultMinSize(minHeight = 48.dp, minWidth = 48.dp)) {
+            ChuText("tmux sessions", style = ChuTypography.current.label, color = ChuColors.current.accent)
         }
     }
 }

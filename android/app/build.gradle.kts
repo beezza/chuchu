@@ -85,6 +85,8 @@ android {
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // Compose + multi-SDK Robolectric tests exceed Gradle's default 512 MiB test heap.
+        unitTests.all { it.maxHeapSize = "2g" }
     }
 }
 
@@ -108,8 +110,11 @@ dependencies {
     implementation("androidx.fragment:fragment-ktx:1.8.2")
     testImplementation(libs.junit)
     testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.junit)
     implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.material3)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

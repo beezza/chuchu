@@ -15,9 +15,11 @@ import com.jossephus.chuchu.service.multiplexer.MultiplexerRegistry
 import com.jossephus.chuchu.service.multiplexer.RemoteMultiplexerSession
 import com.jossephus.chuchu.service.ssh.TailscaleStatusChecker
 import com.jossephus.chuchu.service.terminal.HostKeyPrompt
+import com.jossephus.chuchu.model.MultiplexerType
 import com.jossephus.chuchu.service.terminal.SessionState
 import com.jossephus.chuchu.service.terminal.TabSession
 import com.jossephus.chuchu.service.terminal.TabSpec
+import com.jossephus.chuchu.service.terminal.sameEndpoint
 import com.jossephus.chuchu.service.terminal.TerminalMouseAction
 import com.jossephus.chuchu.service.terminal.TerminalMouseButton
 import com.jossephus.chuchu.service.terminal.TerminalSessionRepository
@@ -70,6 +72,89 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     private var multiplexerActionGeneration = 0L
     private var multiplexerSessionListGeneration = 0L
 
+    val tmuxManager =
+        TmuxManagerController(
+            viewModelScope,
+            object : TmuxManagerBackend {
+                override fun currentContext(): TmuxManagerContext? =
+                    sessionRepository.tabs.value
+                        .firstOrNull { it.id == sessionRepository.activeTabId.value }
+                        ?.let { TmuxManagerContext(it.id, it.spec) }
+
+                override suspend fun list(
+                    context: TmuxManagerContext
+                ): List<RemoteMultiplexerSession> {
+                    val sessions =
+                        sessionRepository.withTmuxService(context.tabId, context.spec) { it.list() }
+                    sessionRepository.recordTmuxSessions(context.spec, sessions)
+                    return sessions
+                }
+
+                override suspend fun create(
+                    context: TmuxManagerContext,
+                    name: String,
+                    directory: String,
+                ) {
+                    sessionRepository.withTmuxService(context.tabId, context.spec) {
+                        it.create(
+                            name,
+                            directory,
+                            sessionRepository.openMultiplexerSessionNamesForHost(
+                                context.spec.hostId,
+                                MultiplexerType.Tmux,
+                            ),
+                        )
+                    }
+                }
+
+                override suspend fun rename(
+                    context: TmuxManagerContext,
+                    session: RemoteMultiplexerSession,
+                    name: String,
+                ) {
+                    val identity = requireNotNull(session.identity)
+                    sessionRepository.withTmuxService(context.tabId, context.spec) {
+                        it.rename(identity, name)
+                    }
+                    sessionRepository.updateTmuxSession(context.spec, identity, name = name)
+                }
+
+                override suspend fun terminate(
+                    context: TmuxManagerContext,
+                    session: RemoteMultiplexerSession,
+                ) {
+                    val identity = requireNotNull(session.identity)
+                    sessionRepository.withTmuxService(context.tabId, context.spec) {
+                        it.terminate(identity)
+                    }
+                    sessionRepository.updateTmuxSession(
+                        context.spec,
+                        identity,
+                        name = session.name,
+                        terminated = true,
+                    )
+                }
+
+                override suspend fun preview(
+                    context: TmuxManagerContext,
+                    session: RemoteMultiplexerSession,
+                ): String =
+                    sessionRepository.withTmuxService(context.tabId, context.spec) {
+                        it.preview(requireNotNull(session.identity))
+                    }
+
+                override suspend fun connect(
+                    context: TmuxManagerContext,
+                    session: RemoteMultiplexerSession,
+                ) {
+                    sessionRepository.withTmuxService(context.tabId, context.spec) {
+                        it.verify(requireNotNull(session.identity))
+                    }
+                    sessionRepository.switchTmuxSession(context.tabId, context.spec, session)
+                }
+            },
+        )
+
     private val _tailscaleActive = MutableStateFlow(tailscaleStatusChecker.isActive())
     val tailscaleActive: StateFlow<Boolean> = _tailscaleActive.asStateFlow()
 
@@ -85,6 +170,9 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     init {
         sessionRepository.attachClient()
+        viewModelScope.launch {
+            activeTabId.collect { tmuxManager.connectionChanged() }
+        }
     }
 
     private val _connectionTabByTab = MutableStateFlow<Map<String, ConnectionTab>>(emptyMap())
@@ -178,6 +266,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         val duplicateSpec = spec.copy(
             multiplexer = spec.multiplexer ?: MultiplexerRegistry.defaultType,
             multiplexerSessionName = null,
+            tmuxSessionIdentity = null,
             multiplexerCreateIfMissing = true,
         )
         viewModelScope.launch(Dispatchers.IO) {
@@ -342,9 +431,14 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
 
     fun createNextMultiplexerSession() {
         val tab = sessionRepository.activeTab.value ?: return
+        if (tab.spec.multiplexer == MultiplexerType.Tmux) {
+            tmuxManager.openCreateDialog()
+            return
+        }
         val nextSpec = tab.spec.copy(
             multiplexer = tab.spec.multiplexer ?: MultiplexerRegistry.defaultType,
             multiplexerSessionName = null,
+            tmuxSessionIdentity = null,
             multiplexerCreateIfMissing = true,
         )
         viewModelScope.launch(Dispatchers.IO) {
@@ -370,7 +464,8 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         val state = _multiplexerState.value
         val activeHostId = activeTab?.spec?.hostId
         val sessionListMatchesTab = sourceTabId != null && state.sessionsSourceTabId == sourceTabId && activeTab?.id == sourceTabId
-        val sessionListMatchesHost = activeHostId != null && state.sessionsSourceHostId == activeHostId
+        val sourceTab = sessionRepository.tabs.value.firstOrNull { it.id == sourceTabId }
+        val sessionListMatchesHost = sourceTab != null && activeTab != null && sourceTab.spec.sameEndpoint(activeTab.spec)
         if (activeTab == null || (!sessionListMatchesTab && !sessionListMatchesHost)) {
             _multiplexerState.value = state.copy(
                 sessions = emptyList(),
@@ -381,7 +476,19 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
             )
             return
         }
-        sessionRepository.switchActiveMultiplexerSession(name)
+        if (activeTab.spec.multiplexer == MultiplexerType.Tmux) {
+            val session = state.sessions.firstOrNull { it.name == name && it.identity != null } ?: return
+            viewModelScope.launch {
+                try {
+                    sessionRepository.withTmuxService(activeTab.id, activeTab.spec) { it.verify(requireNotNull(session.identity)) }
+                    sessionRepository.switchTmuxSession(activeTab.id, activeTab.spec, session)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _multiplexerState.value = _multiplexerState.value.copy(sessionsError = e.message)
+                }
+            }
+        } else sessionRepository.switchActiveMultiplexerSession(name)
     }
 
     fun retryPendingMultiplexerOpen() {
@@ -394,6 +501,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
         val plainSpec = action.spec.copy(
             multiplexer = null,
             multiplexerSessionName = null,
+            tmuxSessionIdentity = null,
             multiplexerCreateIfMissing = true,
         )
         _multiplexerState.value = MultiplexerUiState()
@@ -750,6 +858,7 @@ class TerminalViewModel(application: Application) : AndroidViewModel(application
     }
 
     override fun onCleared() {
+        tmuxManager.dismiss()
         sessionRepository.detachClient()
     }
 

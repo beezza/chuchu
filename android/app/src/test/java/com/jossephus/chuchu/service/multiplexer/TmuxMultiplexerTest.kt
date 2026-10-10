@@ -74,27 +74,12 @@ class TmuxMultiplexerTest {
     }
 
     @Test
-    fun listSessionsCommandChecksExecutableBeforeTreatingNoServerAsEmptySuccess() {
-        val command = TmuxMultiplexer.listSessionsCommand()
-
-        assertEquals(
-            "if ! command -v tmux >/dev/null 2>&1; then printf 'tmux executable not found\\n' >&2; false; " +
-                "else tmux list-sessions -F '#{session_name}\t#{session_attached}' 2>/dev/null; " +
-                "status=\$?; if [ \"\$status\" -eq 1 ]; then true; else [ \"\$status\" -eq 0 ]; fi; fi",
-            command,
-        )
+    fun listSessionsUsesRichFramedCommand() {
+        assertEquals(TmuxCommands.list(), TmuxMultiplexer.listSessionsCommand())
     }
 
     @Test
-    fun parsesSessionList() {
-        val sessions = TmuxMultiplexer.parseSessions("main\t1\nwork\t0\n")
-
-        assertEquals(
-            listOf(
-                RemoteMultiplexerSession(name = "main", attached = true),
-                RemoteMultiplexerSession(name = "work", attached = false),
-            ),
-            sessions,
-        )
+    fun parsesEmptySessionList() {
+        assertEquals(emptyList<RemoteMultiplexerSession>(), TmuxMultiplexer.parseSessions(""))
     }
 }

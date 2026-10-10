@@ -15,6 +15,12 @@ import com.jossephus.chuchu.service.multiplexer.MultiplexerCommandResult
 import com.jossephus.chuchu.service.multiplexer.MultiplexerRegistry
 import com.jossephus.chuchu.service.multiplexer.MultiplexerSessionAllocator
 import com.jossephus.chuchu.service.multiplexer.RemoteMultiplexerSession
+import com.jossephus.chuchu.service.multiplexer.TmuxCommands
+import com.jossephus.chuchu.service.multiplexer.TmuxSessionIdentity
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
+import java.io.ByteArrayOutputStream
+import kotlin.coroutines.EmptyCoroutineContext
 import com.jossephus.chuchu.service.ssh.HostKeyCheck
 import com.jossephus.chuchu.service.ssh.HostKeyStore
 import com.jossephus.chuchu.service.ssh.NativeSshService
@@ -88,11 +94,13 @@ class TerminalSessionEngine(
         val multiplexer: MultiplexerType? = null,
         val multiplexerSessionName: String? = null,
         val multiplexerCreateIfMissing: Boolean = true,
+        val tmuxSessionIdentity: TmuxSessionIdentity? = null,
     ) {
         fun multiplexerStartupCommand(): String? {
             val type = multiplexer ?: return null
             if (!type.runtimeSupported || transport == Transport.Mosh || transport == Transport.LocalShell) return null
             val sessionName = multiplexerSessionName?.takeIf { it.isNotBlank() } ?: return null
+            if (type == MultiplexerType.Tmux && tmuxSessionIdentity != null) return TmuxCommands.attach(tmuxSessionIdentity)
             val runtime = MultiplexerRegistry.forType(type) ?: return null
             return runtime.launchCommand(
                 sessionName = sessionName,
@@ -129,7 +137,7 @@ class TerminalSessionEngine(
     private var images: List<ImagePlacement> = emptyList()
     private var pendingColorScheme: Int? = null
     private var pendingDefaultColors: DefaultColors? = null
-    private var lastConnectionParams: ConnectionParams? = null
+    @Volatile private var lastConnectionParams: ConnectionParams? = null
     private var reconnectJob: Job? = null
     private var disconnectRequested = false
 
@@ -170,7 +178,8 @@ class TerminalSessionEngine(
         multiplexer: MultiplexerType? = null,
         multiplexerSessionName: String? = null,
         multiplexerCreateIfMissing: Boolean = true,
-    ) {
+        tmuxSessionIdentity: TmuxSessionIdentity? = null,
+    ): Job {
         disconnectRequested = false
         val params =
             ConnectionParams(
@@ -187,9 +196,10 @@ class TerminalSessionEngine(
                 multiplexer = multiplexer,
                 multiplexerSessionName = multiplexerSessionName,
                 multiplexerCreateIfMissing = multiplexerCreateIfMissing,
+                tmuxSessionIdentity = tmuxSessionIdentity,
             )
         lastConnectionParams = params
-        scope.launch(dispatcher) {
+        return scope.launch(dispatcher) {
             reconnectJob?.cancel()
             reconnectJob = null
             _state.value =
@@ -255,6 +265,10 @@ class TerminalSessionEngine(
                 return@launch
             }
             try {
+                verifyTmuxSession(params)
+                // The old reader must not consume bytes from the newly opened connection.
+                readJob?.cancel()
+                readJob = null
                 establishConnection(params, username)
                 _state.value =
                     _state.value.copy(
@@ -527,6 +541,48 @@ class TerminalSessionEngine(
         is MultiplexerAvailability.Error -> availability.message
     }
 
+    fun trackTmuxSession(identity: TmuxSessionIdentity, name: String) {
+        val params = lastConnectionParams ?: return
+        if (params.multiplexer != MultiplexerType.Tmux) return
+        // Recovery must follow a renamed session by identity rather than recreate its old name.
+        lastConnectionParams =
+            params.copy(
+                tmuxSessionIdentity = identity,
+                multiplexerSessionName = name,
+                multiplexerCreateIfMissing = false,
+            )
+    }
+
+    private class TmuxSessionUnavailableException :
+        IllegalStateException(
+            "tmux session changed or no longer exists. Choose a session from the manager."
+        )
+
+    private suspend fun verifyTmuxSession(params: ConnectionParams) {
+        val identity = params.tmuxSessionIdentity ?: return
+        val result =
+            runMultiplexerCommand(
+                params,
+                TmuxCommands.verify(identity),
+                cancellationJob = currentCoroutineContext().job,
+            )
+        if (!result.isSuccess || result.stdout.trim() != identity.token) {
+            throw TmuxSessionUnavailableException()
+        }
+    }
+
+    suspend fun executeTmuxCommand(spec: TabSpec, command: String): MultiplexerCommandResult =
+        withContext(dispatcher) {
+            check(spec.multiplexer == MultiplexerType.Tmux && spec.usesRuntimeMultiplexer) {
+                "tmux management requires an SSH connection with tmux enabled"
+            }
+            runMultiplexerCommand(
+                spec.toConnectionParams(),
+                command,
+                cancellationJob = currentCoroutineContext().job,
+            )
+        }
+
     suspend fun listMultiplexerSessions(spec: TabSpec): List<RemoteMultiplexerSession> =
         withContext(dispatcher) {
             val type = spec.multiplexer ?: throw IllegalStateException("No multiplexer selected")
@@ -567,6 +623,10 @@ class TerminalSessionEngine(
             is MultiplexerAvailability.Error -> throw IllegalStateException(availability.message)
         }
         val remoteSessions = listMultiplexerSessions(spec.copy(multiplexer = type))
+        spec.tmuxSessionIdentity?.let { identity ->
+            return@withContext remoteSessions.firstOrNull { it.identity == identity }?.name
+                ?: error("tmux session changed or no longer exists. Choose a session from the manager.")
+        }
         val existingName = spec.multiplexerSessionName?.takeIf { it.isNotBlank() }
         if (existingName != null && spec.multiplexerCreateIfMissing) return@withContext existingName
         if (existingName != null) {
@@ -630,11 +690,15 @@ class TerminalSessionEngine(
         _hostKeyPrompt.value = null
     }
 
-    private fun verifyHostKey(
+    private fun verifyHostKey(host: String, port: Int, algorithm: String, keyBytes: ByteArray): Boolean =
+        verifyCommandHostKey(host, port, algorithm, keyBytes, null)
+
+    private fun verifyCommandHostKey(
         host: String,
         port: Int,
         algorithm: String,
         keyBytes: ByteArray,
+        cancellationJob: Job?,
     ): Boolean {
         val (fingerprint, previousFingerprint) =
             when (val result = hostKeyStore.check(host, port, algorithm, keyBytes)) {
@@ -655,7 +719,7 @@ class TerminalSessionEngine(
                             previousFingerprint = previousFingerprint,
                         )
                 }
-        val accepted = runBlocking { deferred.await() }
+        val accepted = runBlocking(cancellationJob ?: EmptyCoroutineContext) { deferred.await() }
         if (accepted) {
             hostKeyStore.saveKey(host, port, algorithm, keyBytes)
         }
@@ -995,14 +1059,18 @@ class TerminalSessionEngine(
         multiplexer = multiplexer,
         multiplexerSessionName = multiplexerSessionName,
         multiplexerCreateIfMissing = multiplexerCreateIfMissing,
+        tmuxSessionIdentity = tmuxSessionIdentity,
     )
 
     private fun runMultiplexerCommand(
         params: ConnectionParams,
         command: String,
         timeoutMs: Long = 20_000,
+        cancellationJob: Job? = null,
     ): MultiplexerCommandResult {
-        val ssh = NativeSshService(hostKeyPolicy = ::verifyHostKey)
+        val ssh = NativeSshService(hostKeyPolicy = { host, port, algorithm, bytes ->
+            verifyCommandHostKey(host, port, algorithm, bytes, cancellationJob)
+        })
         ssh.use { service ->
             service.connect(
                 host = params.host,
@@ -1014,33 +1082,37 @@ class TerminalSessionEngine(
                 privateKeyPem = params.privateKeyPem,
                 keyPassphrase = params.keyPassphrase,
             )
+            cancellationJob?.ensureActive()
             if (!service.openExec(withExitEnvelope(command))) {
                 return MultiplexerCommandResult(1, "", "Remote server did not open an exec channel")
             }
-            return readExecOutput(service, timeoutMs)
+            return readExecOutput(service, timeoutMs, cancellationJob)
         }
     }
 
     private fun withExitEnvelope(command: String): String =
-        "$command; printf '\nCHUCHU_EXIT:%s\n' \"\$?\""
+        "( $command\n) 2>&1; printf '\nCHUCHU_EXIT:%s\n' \"\$?\""
 
     private fun readExecOutput(
         service: NativeSshService,
         timeoutMs: Long,
+        cancellationJob: Job? = null,
     ): MultiplexerCommandResult {
-        val output = StringBuilder()
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
+        val output = ByteArrayOutputStream()
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (System.nanoTime() < deadline) {
+            cancellationJob?.ensureActive()
             val chunk = service.read(4096)
             if (chunk != null && chunk.isNotEmpty()) {
-                output.append(String(chunk, Charsets.UTF_8))
+                output.write(chunk)
+                if (output.size() > 1_048_576) return MultiplexerCommandResult(125, "", "Command output exceeded 1 MiB")
             } else if (service.isChannelEof()) {
-                return parseCommandEnvelope(output.toString())
+                return parseCommandEnvelope(output.toString("UTF-8"))
             } else {
                 Thread.sleep(25)
             }
         }
-        return MultiplexerCommandResult(124, output.toString(), "Command timed out")
+        return MultiplexerCommandResult(124, "", "Command timed out")
     }
 
     private fun parseCommandEnvelope(output: String): MultiplexerCommandResult {
@@ -1051,8 +1123,10 @@ class TerminalSessionEngine(
                 stderr = "Missing command exit marker",
             )
         val exitCode = marker.groupValues.getOrNull(1)?.toIntOrNull() ?: 125
-        val cleanOutput = output.substring(0, marker.range.first).trimEnd()
-        return MultiplexerCommandResult(exitCode = exitCode, stdout = cleanOutput, stderr = "")
+        val cleanOutput = output.substring(0, marker.range.first)
+        // The native reader merges SSH stdout and stderr; nonzero output is diagnostic text.
+        return if (exitCode == 0) MultiplexerCommandResult(exitCode, cleanOutput, "")
+        else MultiplexerCommandResult(exitCode, "", cleanOutput)
     }
 
     private fun scheduleReconnect(reason: String) {
@@ -1060,12 +1134,10 @@ class TerminalSessionEngine(
             _state.value = _state.value.copy(status = SessionStatus.Disconnected)
             return
         }
-        val params =
-            lastConnectionParams
-                ?: run {
-                    _state.value = _state.value.copy(status = SessionStatus.Disconnected)
-                    return
-                }
+        if (lastConnectionParams == null) {
+            _state.value = _state.value.copy(status = SessionStatus.Disconnected)
+            return
+        }
         if (reconnectJob?.isActive == true) return
         reconnectJob =
             scope.launch(dispatcher) {
@@ -1082,6 +1154,7 @@ class TerminalSessionEngine(
                         )
                     val delayMs = (1_000L shl (attempt - 1).coerceAtMost(5)).coerceAtMost(60_000L)
                     delay(delayMs)
+                    val params = lastConnectionParams ?: return@launch
                     if (params.username.isBlank()) {
                         _state.value =
                             _state.value.copy(
@@ -1091,6 +1164,7 @@ class TerminalSessionEngine(
                         return@launch
                     }
                     try {
+                        verifyTmuxSession(params)
                         establishConnection(params, params.username)
                         _state.value =
                             _state.value.copy(
@@ -1101,6 +1175,11 @@ class TerminalSessionEngine(
                         requestSnapshot(force = true)
                         startReadLoop()
                         sendStartupCommand(params)
+                        return@launch
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: TmuxSessionUnavailableException) {
+                        _state.value = _state.value.copy(status = SessionStatus.Error, error = e.message)
                         return@launch
                     } catch (e: Exception) {
                         Log.e("TerminalSession", "Reconnect attempt $attempt failed", e)
