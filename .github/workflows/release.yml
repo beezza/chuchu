@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
@@ -30,26 +32,44 @@ jobs:
       - name: parse version from tag
         id: version
         if: ${{ github.ref_type == 'tag' || inputs.release_tag != '' }}
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
         run: |
-          set -e
-          TAG="${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}"
+          set -euo pipefail
+          TAG="$RELEASE_TAG"
           VERSION="${TAG#v}"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag '$TAG' is not a valid semver (expected MAJOR.MINOR.PATCH, optionally prefixed with 'v')"
+          if ! [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-preview\.([1-9][0-9]?))?$ ]]; then
+            echo "::error::Expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-preview.N (N=1..99)"
             exit 1
           fi
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          MAJOR=$((10#${BASH_REMATCH[1]}))
+          MINOR=$((10#${BASH_REMATCH[2]}))
+          PATCH=$((10#${BASH_REMATCH[3]}))
+          PREVIEW="${BASH_REMATCH[5]}"
           for COMPONENT in "$MAJOR" "$MINOR" "$PATCH"; do
             if [ "$COMPONENT" -gt 99 ]; then
               echo "::error::Version component '$COMPONENT' exceeds 99 (MMmmpp scheme limit)"
               exit 1
             fi
           done
+          CODE=$(((MAJOR * 10000 + MINOR * 100 + PATCH) * 1000))
+          PRERELEASE=false
+          if [ -n "$PREVIEW" ]; then
+            # Leave room below the final release so Android accepts its update.
+            CODE=$((CODE - 100 + PREVIEW))
+            PRERELEASE=true
+          fi
+          if [ "$CODE" -lt 1 ]; then
+            echo "::error::Version must have a positive Android versionCode"
+            exit 1
+          fi
           echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
           echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
           echo "patch=$PATCH" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Parsed version: $VERSION (major=$MAJOR minor=$MINOR patch=$PATCH)"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Parsed version: $VERSION (code=$CODE, prerelease=$PRERELEASE)"
 
       - name: build chuchu_jni
         run: |
@@ -60,8 +80,19 @@ jobs:
           '
 
       - name: generate release key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          cd android/app/ && echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > key.jks
+          set -euo pipefail
+          : "${KEYSTORE_BASE64:?Missing release keystore}"
+          : "${KEYSTORE_PASSWORD:?Missing keystore password}"
+          : "${KEY_ALIAS:?Missing signing alias}"
+          : "${KEY_PASSWORD:?Missing key password}"
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > android/app/key.jks
 
       - name: build android release artifacts (APK + AAB)
         env:
@@ -71,6 +102,8 @@ jobs:
           VERSION_MAJOR: ${{ steps.version.outputs.major }}
           VERSION_MINOR: ${{ steps.version.outputs.minor }}
           VERSION_PATCH: ${{ steps.version.outputs.patch }}
+          VERSION_NAME: ${{ steps.version.outputs.version }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
           ANDROID_ABI_FILTERS: arm64-v8a
         run: |
           nix develop -c bash -c '
@@ -79,17 +112,40 @@ jobs:
             chmod +x ./gradlew
             if [ -f local.properties ]; then chmod -w local.properties; fi
             ./gradlew assembleRelease bundleRelease
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify app/build/outputs/apk/release/app-release.apk
           '
+
+      - name: prepare release assets and notes
+        id: assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk "dist/chuchu-${VERSION}-arm64-v8a.apk"
+          cp android/app/build/outputs/bundle/release/app-release.aab "dist/chuchu-${VERSION}.aab"
+          (cd dist && sha256sum *.apk *.aab > SHA256SUMS)
+          NOTES="docs/releases/v${VERSION}.md"
+          if [ ! -f "$NOTES" ]; then
+            NOTES="dist/RELEASE_NOTES.md"
+            printf 'ChuChu %s\n\nCommit: %s\n' "$VERSION" "$GITHUB_SHA" > "$NOTES"
+          fi
+          echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
 
       - name: upload release
         if: ${{ github.ref_type == 'tag' || inputs.release_tag != '' }}
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
           target_commitish: ${{ github.sha }}
-          draft: true
+          name: ChuChu ${{ steps.version.outputs.version }}
+          body_path: ${{ steps.assets.outputs.notes }}
+          # Preview tags explicitly publish a prerelease; stable tags keep the draft workflow.
+          draft: ${{ steps.version.outputs.prerelease != 'true' }}
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          make_latest: "false"
           files: |
-            ./android/app/build/outputs/apk/release/*.apk
-            ./android/app/build/outputs/bundle/release/*.aab
+            dist/*.apk
+            dist/*.aab
+            dist/SHA256SUMS
           fail_on_unmatched_files: true
-
